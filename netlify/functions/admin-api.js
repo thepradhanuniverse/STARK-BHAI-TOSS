@@ -1,9 +1,6 @@
 
 const crypto = require("crypto");
 
-const META_PIXEL_ID = "4634843846793315";
-const META_API_VERSION = "v27.0";
-
 const HEADERS = {
   "Content-Type": "application/json",
   "Access-Control-Allow-Origin": "https://starkxcricket.netlify.app",
@@ -29,80 +26,60 @@ function safeCompare(a, b) {
     crypto.timingSafeEqual(first, second);
 }
 
-// Send approved registration event to Meta Conversions API
-async function sendMetaRegistration(attribution, approvedAt) {
-  const accessToken = process.env.META_ACCESS_TOKEN;
+async function sendMetaSubscribe(attribution) {
+  const {
+    META_PIXEL_ID,
+    META_ACCESS_TOKEN,
+    META_TEST_EVENT_CODE
+  } = process.env;
 
-  if (!accessToken) {
-    throw new Error("META_ACCESS_TOKEN is missing");
+  if (!META_PIXEL_ID || !META_ACCESS_TOKEN) {
+    throw new Error("Meta environment variables missing");
   }
 
   const userData = {};
 
-  if (attribution.fbp) {
-    userData.fbp = attribution.fbp;
-  }
+  if (attribution.fbc) userData.fbc = attribution.fbc;
+  if (attribution.fbp) userData.fbp = attribution.fbp;
 
-  if (attribution.fbc) {
-    userData.fbc = attribution.fbc;
-  }
-
-  // Do not send an event without browser matching data
-  if (!userData.fbp && !userData.fbc) {
-    throw new Error("No fbp or fbc available for Meta matching");
-  }
-
-  const eventId =
-    `telegram-approved-${attribution.session_id}`;
-
-  const payload = {
-    data: [
-      {
-        event_name: "CompleteRegistration",
-        event_time: Math.floor(
-          new Date(approvedAt).getTime() / 1000
-        ),
-        event_id: eventId,
-        action_source: "website",
-        event_source_url: "https://starkxcricket.netlify.app/",
-        user_data: userData,
-        custom_data: {
-          content_name: "STARK BHAI TOSS Telegram Channel",
-          registration_status: "approved"
-        }
-      }
-    ]
+  const event = {
+    event_name: "Subscribe",
+    event_time: Math.floor(Date.now() / 1000),
+    event_id:
+      `telegram-approved-${attribution.telegram_user_id}`,
+    action_source: "website",
+    event_source_url: "https://starkxcricket.netlify.app/",
+    user_data: userData
   };
 
-  const metaUrl =
-    `https://graph.facebook.com/${META_API_VERSION}/${META_PIXEL_ID}/events`;
+  const payload = { data: [event] };
 
-  const metaResponse = await fetch(metaUrl, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify({
-      ...payload,
-      access_token: accessToken
-    })
-  });
+  if (META_TEST_EVENT_CODE) {
+    payload.test_event_code = META_TEST_EVENT_CODE;
+  }
 
-  const metaResult = await metaResponse.json();
+  const metaResponse = await fetch(
+    `https://graph.facebook.com/v25.0/${META_PIXEL_ID}/events?access_token=${encodeURIComponent(META_ACCESS_TOKEN)}`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify(payload)
+    }
+  );
 
-  if (!metaResponse.ok || metaResult.error) {
+  const result = await metaResponse.json();
+
+  if (!metaResponse.ok || result.error ||
+      result.events_received !== 1) {
     throw new Error(
-      metaResult.error?.message ||
-      "Meta Conversions API request failed"
+      result.error?.message ||
+      JSON.stringify(result)
     );
   }
 
-  if (!metaResult.events_received ||
-      metaResult.events_received < 1) {
-    throw new Error("Meta did not confirm event receipt");
-  }
-
-  return metaResult;
+  return result;
 }
 
 exports.handler = async (event) => {
@@ -152,14 +129,13 @@ exports.handler = async (event) => {
     };
 
     const baseUrl = SUPABASE_URL.replace(/\/$/, "");
-
     const tableUrl =
       `${baseUrl}/rest/v1/telegram_join_requests`;
 
     const attributionUrl =
       `${baseUrl}/rest/v1/telegram_attributions`;
 
-    // GET: Fetch join requests and dashboard statistics
+    // GET: Dashboard data
     if (event.httpMethod === "GET") {
       const url = new URL(tableUrl);
 
@@ -176,10 +152,7 @@ exports.handler = async (event) => {
       });
 
       if (!result.ok) {
-        throw new Error(
-          "Could not fetch join requests: " +
-          await result.text()
-        );
+        throw new Error(await result.text());
       }
 
       const rows = await result.json();
@@ -194,7 +167,7 @@ exports.handler = async (event) => {
       });
     }
 
-    // POST: Approve or decline a Telegram join request
+    // POST: Approve or decline
     if (event.httpMethod === "POST") {
       let body;
 
@@ -235,19 +208,17 @@ exports.handler = async (event) => {
         });
       }
 
-      // Find matching Telegram join request
+      // Find the join request
       const lookupUrl = new URL(tableUrl);
 
       lookupUrl.searchParams.set(
         "select",
         "telegram_user_id,chat_id,invite_link"
       );
-
       lookupUrl.searchParams.set(
         "telegram_user_id",
         `eq.${userId}`
       );
-
       lookupUrl.searchParams.set(
         "chat_id",
         `eq.${chatId}`
@@ -259,10 +230,7 @@ exports.handler = async (event) => {
       );
 
       if (!lookupResponse.ok) {
-        throw new Error(
-          "Could not find join request: " +
-          await lookupResponse.text()
-        );
+        throw new Error(await lookupResponse.text());
       }
 
       const matchingRequests = await lookupResponse.json();
@@ -276,61 +244,43 @@ exports.handler = async (event) => {
 
       const inviteLink = matchingRequests[0].invite_link;
 
-      if (!inviteLink) {
-        return response(404, {
-          success: false,
-          message: "Invite link missing from join request"
-        });
-      }
+      // Find the matching attribution
+      let attribution = null;
 
-      // Find the matching visitor attribution
-      const attributionLookupUrl =
-        new URL(attributionUrl);
+      if (inviteLink) {
+        const findAttributionUrl = new URL(attributionUrl);
 
-      attributionLookupUrl.searchParams.set(
-        "select",
-        "session_id,fbp,fbc,meta_event_sent"
-      );
-
-      attributionLookupUrl.searchParams.set(
-        "invite_link",
-        `eq.${inviteLink}`
-      );
-
-      attributionLookupUrl.searchParams.set(
-        "telegram_user_id",
-        `eq.${userId}`
-      );
-
-      const attributionLookupResponse = await fetch(
-        attributionLookupUrl.toString(),
-        { headers: supabaseHeaders }
-      );
-
-      if (!attributionLookupResponse.ok) {
-        throw new Error(
-          "Could not fetch attribution: " +
-          await attributionLookupResponse.text()
+        findAttributionUrl.searchParams.set(
+          "select",
+          "telegram_user_id,invite_link,fbc,fbp,meta_event_sent"
         );
+        findAttributionUrl.searchParams.set(
+          "invite_link",
+          `eq.${inviteLink}`
+        );
+        findAttributionUrl.searchParams.set(
+          "telegram_user_id",
+          `eq.${userId}`
+        );
+        findAttributionUrl.searchParams.set("limit", "1");
+
+        const attributionLookup = await fetch(
+          findAttributionUrl.toString(),
+          { headers: supabaseHeaders }
+        );
+
+        if (!attributionLookup.ok) {
+          throw new Error(await attributionLookup.text());
+        }
+
+        const attributionRows = await attributionLookup.json();
+        attribution = attributionRows[0] || null;
       }
 
-      const attributionRows =
-        await attributionLookupResponse.json();
-
-      if (!attributionRows.length) {
-        return response(404, {
-          success: false,
-          message: "Matching visitor attribution not found"
-        });
-      }
-
-      const attribution = attributionRows[0];
-
-      // Perform actual Telegram approval or decline
-      const telegramMethod =
-        action === "approve"
-          ? "approveChatJoinRequest"
-          : "declineChatJoinRequest";
+      // Telegram action
+      const telegramMethod = action === "approve"
+        ? "approveChatJoinRequest"
+        : "declineChatJoinRequest";
 
       const telegramResponse = await fetch(
         `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/${telegramMethod}`,
@@ -351,23 +301,21 @@ exports.handler = async (event) => {
       if (!telegramResponse.ok || !telegramResult.ok) {
         return response(400, {
           success: false,
-          message:
-            telegramResult.description ||
+          message: telegramResult.description ||
             "Telegram action failed"
         });
       }
 
-      // Update Telegram join request status
       const newStatus =
         action === "approve" ? "approved" : "declined";
 
+      // Update join request status
       const updateUrl = new URL(tableUrl);
 
       updateUrl.searchParams.set(
         "telegram_user_id",
         `eq.${userId}`
       );
-
       updateUrl.searchParams.set(
         "chat_id",
         `eq.${chatId}`
@@ -388,155 +336,118 @@ exports.handler = async (event) => {
       );
 
       if (!joinUpdateResponse.ok) {
-        throw new Error(
-          "Join request status update failed: " +
-          await joinUpdateResponse.text()
-        );
+        throw new Error(await joinUpdateResponse.text());
       }
 
-      const updatedRows =
-        await joinUpdateResponse.json();
+      const updatedRows = await joinUpdateResponse.json();
 
       if (!updatedRows.length) {
         return response(500, {
           success: false,
-          message:
-            "Telegram action succeeded, but join request database update failed"
+          message: "Telegram action succeeded, but database update failed"
         });
       }
 
-      // Update visitor attribution status
-      const approvedAt = new Date().toISOString();
+      // Decline: update attribution only
+      if (action === "decline") {
+        if (attribution) {
+          const declineUrl = new URL(attributionUrl);
 
-      const attributionUpdateUrl =
-        new URL(attributionUrl);
+          declineUrl.searchParams.set(
+            "invite_link",
+            `eq.${inviteLink}`
+          );
+          declineUrl.searchParams.set(
+            "telegram_user_id",
+            `eq.${userId}`
+          );
 
-      attributionUpdateUrl.searchParams.set(
-        "invite_link",
-        `eq.${inviteLink}`
-      );
+          await fetch(declineUrl.toString(), {
+            method: "PATCH",
+            headers: supabaseHeaders,
+            body: JSON.stringify({
+              status: "declined"
+            })
+          });
+        }
 
-      attributionUpdateUrl.searchParams.set(
-        "telegram_user_id",
-        `eq.${userId}`
-      );
-
-      const attributionUpdate = {
-        status: newStatus
-      };
-
-      if (action === "approve") {
-        attributionUpdate.approved_at = approvedAt;
+        return response(200, {
+          success: true,
+          message: "Join request declined successfully"
+        });
       }
 
-      const attributionUpdateResponse = await fetch(
-        attributionUpdateUrl.toString(),
-        {
-          method: "PATCH",
-          headers: {
-            ...supabaseHeaders,
-            Prefer: "return=representation"
-          },
-          body: JSON.stringify(attributionUpdate)
-        }
-      );
+      // Approval: send Meta event once
+      if (!attribution) {
+        return response(200, {
+          success: true,
+          meta_event_sent: false,
+          message: "Telegram approved. Matching attribution record not found."
+        });
+      }
 
-      if (!attributionUpdateResponse.ok) {
-        console.error(
-          "Attribution update failed:",
-          await attributionUpdateResponse.text()
+      if (attribution.meta_event_sent === true) {
+        return response(200, {
+          success: true,
+          meta_event_sent: true,
+          message: "Already approved and Meta event was already sent."
+        });
+      }
+
+      try {
+        const metaResult = await sendMetaSubscribe({
+          ...attribution,
+          telegram_user_id: userId
+        });
+
+        // Mark as sent only after Meta confirms receipt
+        const markSentUrl = new URL(attributionUrl);
+
+        markSentUrl.searchParams.set(
+          "invite_link",
+          `eq.${inviteLink}`
+        );
+        markSentUrl.searchParams.set(
+          "telegram_user_id",
+          `eq.${userId}`
         );
 
-        return response(500, {
-          success: false,
-          message:
-            "Telegram action succeeded, but attribution update failed"
-        });
-      }
-
-      const updatedAttributions =
-        await attributionUpdateResponse.json();
-
-      if (!updatedAttributions.length) {
-        return response(500, {
-          success: false,
-          message:
-            "Telegram action succeeded, but attribution record was not updated"
-        });
-      }
-
-      // Send Meta event ONLY after successful approval
-      let metaEventSent = false;
-      let metaWarning = null;
-
-      if (action === "approve") {
-        if (attribution.meta_event_sent === true) {
-          metaEventSent = true;
-        } else {
-          try {
-            await sendMetaRegistration(
-              attribution,
-              approvedAt
-            );
-
-            // Mark Meta event as sent in Supabase
-            const metaStatusUrl =
-              new URL(attributionUrl);
-
-            metaStatusUrl.searchParams.set(
-              "invite_link",
-              `eq.${inviteLink}`
-            );
-
-            metaStatusUrl.searchParams.set(
-              "telegram_user_id",
-              `eq.${userId}`
-            );
-
-            const metaStatusResponse = await fetch(
-              metaStatusUrl.toString(),
-              {
-                method: "PATCH",
-                headers: {
-                  ...supabaseHeaders,
-                  Prefer: "return=minimal"
-                },
-                body: JSON.stringify({
-                  meta_event_sent: true
-                })
-              }
-            );
-
-            if (!metaStatusResponse.ok) {
-              throw new Error(
-                "Meta event sent, but Supabase tracking update failed: " +
-                await metaStatusResponse.text()
-              );
-            }
-
-            metaEventSent = true;
-
-          } catch (metaError) {
-            console.error(
-              "Meta CompleteRegistration event error:",
-              metaError.message
-            );
-
-            metaWarning =
-              "Telegram approval succeeded, but Meta event was not confirmed. Do not approve the same request again.";
+        const markResponse = await fetch(
+          markSentUrl.toString(),
+          {
+            method: "PATCH",
+            headers: supabaseHeaders,
+            body: JSON.stringify({
+              status: "approved",
+              approved_at: new Date().toISOString(),
+              meta_event_sent: true
+            })
           }
-        }
-      }
+        );
 
-      return response(200, {
-        success: true,
-        meta_event_sent: metaEventSent,
-        message:
-          action === "approve"
-            ? metaWarning ||
-              "Telegram approved and CompleteRegistration event sent successfully"
-            : "Telegram join request and attribution declined successfully"
-      });
+        if (!markResponse.ok) {
+          throw new Error(
+            "Meta received event, but database flag update failed: " +
+            await markResponse.text()
+          );
+        }
+
+        return response(200, {
+          success: true,
+          meta_event_sent: true,
+          meta_events_received: metaResult.events_received,
+          message: "Telegram approved and Meta Subscribe event sent."
+        });
+
+      } catch (metaError) {
+        console.error("Meta CAPI error:", metaError);
+
+        return response(200, {
+          success: true,
+          meta_event_sent: false,
+          message: "Telegram approved, but Meta event failed. Check Netlify function logs."
+        });
+      }
     }
 
     return response(405, {
