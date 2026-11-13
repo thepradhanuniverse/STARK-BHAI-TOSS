@@ -11,14 +11,19 @@ exports.handler = async (event) => {
     const {
       SUPABASE_URL,
       SUPABASE_SERVICE_ROLE_KEY,
-      TELEGRAM_WEBHOOK_SECRET
+      TELEGRAM_WEBHOOK_SECRET,
+      META_PIXEL_ID,
+      META_ACCESS_TOKEN
     } = process.env;
 
     if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
       throw new Error("Supabase environment variables missing");
     }
 
-    // Verify Telegram webhook secret if configured
+    if (!META_PIXEL_ID || !META_ACCESS_TOKEN) {
+      throw new Error("Meta CAPI environment variables missing");
+    }
+
     if (
       TELEGRAM_WEBHOOK_SECRET &&
       event.headers["x-telegram-bot-api-secret-token"] !==
@@ -33,7 +38,6 @@ exports.handler = async (event) => {
     const update = JSON.parse(event.body || "{}");
     const request = update.chat_join_request;
 
-    // Ignore updates other than join requests
     if (!request) {
       return {
         statusCode: 200,
@@ -43,7 +47,6 @@ exports.handler = async (event) => {
 
     const user = request.from;
     const chat = request.chat;
-
     const supabase = SUPABASE_URL.replace(/\/$/, "");
 
     const dbHeaders = {
@@ -58,7 +61,7 @@ exports.handler = async (event) => {
     const requestedAt =
       new Date(request.date * 1000).toISOString();
 
-    // 1. Save the join request
+    // 1. Save Telegram join request
     const record = {
       telegram_user_id: user.id,
       username: user.username || null,
@@ -90,9 +93,8 @@ exports.handler = async (event) => {
       );
     }
 
-    // 2. Match the invite link with its visitor attribution
+    // 2. Match visitor attribution
     if (inviteLink) {
-
       const attributionResponse = await fetch(
         `${supabase}/rest/v1/telegram_attributions?invite_link=eq.${encodeURIComponent(inviteLink)}`,
         {
@@ -119,21 +121,103 @@ exports.handler = async (event) => {
       const updatedRows = await attributionResponse.json();
 
       if (!updatedRows.length) {
-        console.warn(
-          "No attribution found for invite link:",
-          inviteLink
-        );
+        console.warn("No attribution found for invite link:", inviteLink);
       } else {
+        const attribution = updatedRows[0];
+
         console.log(
-          "Attribution linked successfully for Telegram user:",
+          "Attribution linked for Telegram user:",
           user.id
         );
-      }
 
+        // 3. Send Meta Lead only once per attribution
+        if (!attribution.lead_event_sent) {
+          const userData = {
+            external_id: [
+              // SHA-256 hash of Telegram user ID
+              await sha256(String(user.id))
+            ]
+          };
+
+          if (attribution.fbc) {
+            userData.fbc = attribution.fbc;
+          }
+
+          if (attribution.fbp) {
+            userData.fbp = attribution.fbp;
+          }
+
+          if (attribution.client_ip_address) {
+            userData.client_ip_address =
+              attribution.client_ip_address;
+          }
+
+          if (attribution.client_user_agent) {
+            userData.client_user_agent =
+              attribution.client_user_agent;
+          }
+
+          const metaPayload = {
+            data: [{
+              event_name: "Lead",
+              event_time: request.date,
+              event_id: `telegram-join-request-${user.id}`,
+              action_source: "website",
+              event_source_url: "https://starkxcricket.netlify.app/",
+              user_data: userData
+            }]
+          };
+
+          const metaResponse = await fetch(
+            `https://graph.facebook.com/v25.0/${META_PIXEL_ID}/events`,
+            {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                Authorization: `Bearer ${META_ACCESS_TOKEN}`
+              },
+              body: JSON.stringify(metaPayload)
+            }
+          );
+
+          const metaResult = await metaResponse.json();
+
+          if (
+            !metaResponse.ok ||
+            metaResult.events_received !== 1
+          ) {
+            console.error("Meta Lead CAPI error:", metaResult);
+          } else {
+            console.log("Meta Lead event received successfully");
+
+            // Mark sent only after Meta confirms receipt
+            const markResponse = await fetch(
+              `${supabase}/rest/v1/telegram_attributions?id=eq.${encodeURIComponent(attribution.id)}`,
+              {
+                method: "PATCH",
+                headers: {
+                  ...dbHeaders,
+                  Prefer: "return=minimal"
+                },
+                body: JSON.stringify({
+                  lead_event_sent: true
+                })
+              }
+            );
+
+            if (!markResponse.ok) {
+              console.error(
+                "Could not mark Lead as sent:",
+                await markResponse.text()
+              );
+            }
+          }
+        } else {
+          console.log("Lead event already sent; skipping duplicate");
+        }
+      }
     } else {
-      console.warn(
-        "Join request received without an invite link"
-      );
+      console.warn("Join request received without an invite link");
     }
 
     return {
@@ -150,3 +234,12 @@ exports.handler = async (event) => {
     };
   }
 };
+
+async function sha256(value) {
+  const data = new TextEncoder().encode(value);
+  const hash = await crypto.subtle.digest("SHA-256", data);
+
+  return Array.from(new Uint8Array(hash))
+    .map(byte => byte.toString(16).padStart(2, "0"))
+    .join("");
+}
