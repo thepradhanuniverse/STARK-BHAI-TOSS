@@ -126,7 +126,7 @@ td{color:#e5e7eb}
     <h2>Admin Login</h2>
     <p class="subtitle">Enter your dashboard password to continue.</p>
     <input id="password" type="password" placeholder="Enter admin password" autocomplete="current-password">
-    <button class="btn gold" id="loginBtn" onclick="login()">LOGIN TO DASHBOARD</button>
+    <button class="btn gold" id="loginBtn" type="button">LOGIN TO DASHBOARD</button>
     <div id="loginError" class="error"></div>
   </div>
 </div>
@@ -141,8 +141,8 @@ td{color:#e5e7eb}
       </div>
     </div>
     <div style="display:flex;gap:9px">
-      <button class="btn" onclick="loadData()">↻ Refresh</button>
-      <button class="btn" onclick="logout()">Logout</button>
+      <button class="btn" id="refreshBtn">↻ Refresh</button>
+      <button class="btn" id="logoutBtn">Logout</button>
     </div>
   </header>
 
@@ -167,14 +167,14 @@ td{color:#e5e7eb}
 
   <div class="card">
     <div class="toolbar">
-      <input id="search" placeholder="Search name, username or Telegram ID..." oninput="renderRows()">
-      <select id="filter" onchange="renderRows()">
+      <input id="search" placeholder="Search name, username or Telegram ID...">
+      <select id="filter">
         <option value="all">All statuses</option>
         <option value="pending">Pending</option>
         <option value="approved">Approved</option>
         <option value="declined">Declined</option>
       </select>
-      <button class="btn gold" onclick="loadData()">LOAD LATEST</button>
+      <button class="btn gold" id="loadLatestBtn">LOAD LATEST</button>
     </div>
     <div id="message" class="muted">Login to load join requests.</div>
     <div class="table-wrap">
@@ -218,7 +218,13 @@ async function apiFetch(method="GET", data=null) {
   }
 
   const res = await fetch(API, options);
-  const result = await res.json();
+  let result;
+
+  try {
+    result = await res.json();
+  } catch {
+    throw new Error("Server returned an invalid response.");
+  }
 
   if(res.status === 401) {
     logout();
@@ -331,8 +337,8 @@ function renderRows() {
 
     const action = status === "pending"
       ? '<div class="actions">' +
-        '<button class="small approve" onclick="changeStatus(\\'' + safe(r.telegram_user_id) + '\\',\\'' + safe(r.chat_id) + '\\',\\'approve\\')">Approve</button>' +
-        '<button class="small reject" onclick="changeStatus(\\'' + safe(r.telegram_user_id) + '\\',\\'' + safe(r.chat_id) + '\\',\\'decline\\')">Reject</button>' +
+        '<button class="small approve" data-user="' + safe(r.telegram_user_id) + '" data-chat="' + safe(r.chat_id) + '" data-action="approve">Approve</button>' +
+        '<button class="small reject" data-user="' + safe(r.telegram_user_id) + '" data-chat="' + safe(r.chat_id) + '" data-action="decline">Reject</button>' +
         '</div>'
       : '<span class="muted">—</span>';
 
@@ -349,7 +355,10 @@ function renderRows() {
 
 async function changeStatus(userId, chatId, action) {
   const verb = action === "approve" ? "approve" : "reject";
-  if(!confirm("Are you sure you want to " + verb + " this Telegram join request?")) return;
+
+  if(!confirm("Are you sure you want to " + verb + " this Telegram join request?")) {
+    return;
+  }
 
   if(busy) return;
   busy = true;
@@ -361,8 +370,11 @@ async function changeStatus(userId, chatId, action) {
       telegram_user_id: userId,
       chat_id: chatId
     });
-    document.getElementById("message").textContent = result.message;
-    await loadData();
+
+    document.getElementById("message").textContent = result.message || "Action completed.";
+
+    const refreshed = await apiFetch("GET");
+    showData(refreshed);
   } catch(e) {
     document.getElementById("message").textContent = e.message;
   } finally {
@@ -370,8 +382,29 @@ async function changeStatus(userId, chatId, action) {
   }
 }
 
+/* Login and dashboard button events */
+document.getElementById("loginBtn").addEventListener("click", login);
+document.getElementById("refreshBtn").addEventListener("click", loadData);
+document.getElementById("loadLatestBtn").addEventListener("click", loadData);
+document.getElementById("logoutBtn").addEventListener("click", logout);
+
 document.getElementById("password").addEventListener("keydown", e => {
   if(e.key === "Enter") login();
+});
+
+document.getElementById("search").addEventListener("input", renderRows);
+document.getElementById("filter").addEventListener("change", renderRows);
+
+/* Approve / Reject button event handling */
+document.getElementById("rows").addEventListener("click", e => {
+  const button = e.target.closest("button[data-action]");
+  if(!button) return;
+
+  changeStatus(
+    button.dataset.user,
+    button.dataset.chat,
+    button.dataset.action
+  );
 });
 </script>
 </body>
