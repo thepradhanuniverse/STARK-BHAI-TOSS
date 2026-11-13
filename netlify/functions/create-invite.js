@@ -42,14 +42,31 @@ exports.handler = async (event) => {
       return reply(400, { error: "Invalid session ID" });
     }
 
+    const requestHeaders = event.headers || {};
+
+    const getHeader = (name) => {
+      const key = Object.keys(requestHeaders).find(
+        k => k.toLowerCase() === name.toLowerCase()
+      );
+      return key ? requestHeaders[key] : null;
+    };
+
+    const clientIp =
+      getHeader("x-nf-client-connection-ip") ||
+      getHeader("x-forwarded-for")?.split(",")[0]?.trim() ||
+      null;
+
+    const clientUserAgent = getHeader("user-agent") || null;
+
     const supabase = SUPABASE_URL.replace(/\/$/, "");
+
     const dbHeaders = {
       apikey: SUPABASE_SERVICE_ROLE_KEY,
       Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
       "Content-Type": "application/json"
     };
 
-    // Reuse an invite link already created for this browser session.
+    // Reuse an existing invite link for this browser session.
     const existingResponse = await fetch(
       `${supabase}/rest/v1/telegram_attributions?session_id=eq.${encodeURIComponent(session_id)}&select=invite_link&limit=1`,
       { headers: dbHeaders }
@@ -62,10 +79,35 @@ exports.handler = async (event) => {
     const existingRows = await existingResponse.json();
 
     if (existingRows.length && existingRows[0].invite_link) {
-      return reply(200, { invite_link: existingRows[0].invite_link });
+      // Refresh available visitor matching data.
+      const updateResponse = await fetch(
+        `${supabase}/rest/v1/telegram_attributions?session_id=eq.${encodeURIComponent(session_id)}`,
+        {
+          method: "PATCH",
+          headers: {
+            ...dbHeaders,
+            Prefer: "return=minimal"
+          },
+          body: JSON.stringify({
+            fbclid: fbclid || null,
+            fbc: fbc || null,
+            fbp: fbp || null,
+            client_ip_address: clientIp,
+            client_user_agent: clientUserAgent
+          })
+        }
+      );
+
+      if (!updateResponse.ok) {
+        throw new Error("Could not update visitor attribution");
+      }
+
+      return reply(200, {
+        invite_link: existingRows[0].invite_link
+      });
     }
 
-    // Get the private channel ID from a previously received join request.
+    // Get the private channel ID from a previous join request.
     const chatResponse = await fetch(
       `${supabase}/rest/v1/telegram_join_requests?select=chat_id&order=requested_at.desc&limit=1`,
       { headers: dbHeaders }
@@ -83,7 +125,7 @@ exports.handler = async (event) => {
 
     const chatId = chatRows[0].chat_id;
 
-    // Create a unique invite link that requires admin approval.
+    // Create a unique invite link requiring admin approval.
     const telegramResponse = await fetch(
       `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/createChatInviteLink`,
       {
@@ -100,12 +142,14 @@ exports.handler = async (event) => {
     const telegramData = await telegramResponse.json();
 
     if (!telegramData.ok || !telegramData.result?.invite_link) {
-      throw new Error(telegramData.description || "Telegram invite creation failed");
+      throw new Error(
+        telegramData.description || "Telegram invite creation failed"
+      );
     }
 
     const inviteLink = telegramData.result.invite_link;
 
-    // Save the link and available Meta attribution data.
+    // Save invite and Meta attribution data.
     const saveResponse = await fetch(
       `${supabase}/rest/v1/telegram_attributions`,
       {
@@ -120,6 +164,8 @@ exports.handler = async (event) => {
           fbclid: fbclid || null,
           fbc: fbc || null,
           fbp: fbp || null,
+          client_ip_address: clientIp,
+          client_user_agent: clientUserAgent,
           status: "clicked",
           clicked_at: new Date().toISOString()
         })
@@ -127,13 +173,17 @@ exports.handler = async (event) => {
     );
 
     if (!saveResponse.ok) {
-      throw new Error("Invite was created but attribution could not be saved");
+      throw new Error(
+        "Invite was created but attribution could not be saved"
+      );
     }
 
     return reply(200, { invite_link: inviteLink });
 
   } catch (error) {
     console.error("Create invite error:", error);
-    return reply(500, { error: "Could not create Telegram invite link" });
+    return reply(500, {
+      error: "Could not create Telegram invite link"
+    });
   }
 };
