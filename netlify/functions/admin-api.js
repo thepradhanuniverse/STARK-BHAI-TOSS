@@ -42,11 +42,18 @@ async function sendMetaSubscribe(attribution) {
   if (attribution.fbc) userData.fbc = attribution.fbc;
   if (attribution.fbp) userData.fbp = attribution.fbp;
 
+  if (attribution.client_ip_address) {
+    userData.client_ip_address = attribution.client_ip_address;
+  }
+
+  if (attribution.client_user_agent) {
+    userData.client_user_agent = attribution.client_user_agent;
+  }
+
   const event = {
     event_name: "Subscribe",
     event_time: Math.floor(Date.now() / 1000),
-    event_id:
-      `telegram-approved-${attribution.telegram_user_id}`,
+    event_id: `telegram-approved-${attribution.telegram_user_id}`,
     action_source: "website",
     event_source_url: "https://starkxcricket.netlify.app/",
     user_data: userData
@@ -62,9 +69,7 @@ async function sendMetaSubscribe(attribution) {
     `https://graph.facebook.com/v25.0/${META_PIXEL_ID}/events?access_token=${encodeURIComponent(META_ACCESS_TOKEN)}`,
     {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json"
-      },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload)
     }
   );
@@ -74,8 +79,7 @@ async function sendMetaSubscribe(attribution) {
   if (!metaResponse.ok || result.error ||
       result.events_received !== 1) {
     throw new Error(
-      result.error?.message ||
-      JSON.stringify(result)
+      result.error?.message || JSON.stringify(result)
     );
   }
 
@@ -129,11 +133,8 @@ exports.handler = async (event) => {
     };
 
     const baseUrl = SUPABASE_URL.replace(/\/$/, "");
-    const tableUrl =
-      `${baseUrl}/rest/v1/telegram_join_requests`;
-
-    const attributionUrl =
-      `${baseUrl}/rest/v1/telegram_attributions`;
+    const tableUrl = `${baseUrl}/rest/v1/telegram_join_requests`;
+    const attributionUrl = `${baseUrl}/rest/v1/telegram_attributions`;
 
     // GET: Dashboard data
     if (event.httpMethod === "GET") {
@@ -215,19 +216,12 @@ exports.handler = async (event) => {
         "select",
         "telegram_user_id,chat_id,invite_link"
       );
-      lookupUrl.searchParams.set(
-        "telegram_user_id",
-        `eq.${userId}`
-      );
-      lookupUrl.searchParams.set(
-        "chat_id",
-        `eq.${chatId}`
-      );
+      lookupUrl.searchParams.set("telegram_user_id", `eq.${userId}`);
+      lookupUrl.searchParams.set("chat_id", `eq.${chatId}`);
 
-      const lookupResponse = await fetch(
-        lookupUrl.toString(),
-        { headers: supabaseHeaders }
-      );
+      const lookupResponse = await fetch(lookupUrl.toString(), {
+        headers: supabaseHeaders
+      });
 
       if (!lookupResponse.ok) {
         throw new Error(await lookupResponse.text());
@@ -244,7 +238,7 @@ exports.handler = async (event) => {
 
       const inviteLink = matchingRequests[0].invite_link;
 
-      // Find the matching attribution
+      // Find matching attribution, including visitor matching data
       let attribution = null;
 
       if (inviteLink) {
@@ -252,7 +246,7 @@ exports.handler = async (event) => {
 
         findAttributionUrl.searchParams.set(
           "select",
-          "telegram_user_id,invite_link,fbc,fbp,meta_event_sent"
+          "telegram_user_id,invite_link,fbc,fbp,client_ip_address,client_user_agent,meta_event_sent"
         );
         findAttributionUrl.searchParams.set(
           "invite_link",
@@ -277,7 +271,7 @@ exports.handler = async (event) => {
         attribution = attributionRows[0] || null;
       }
 
-      // Telegram action
+      // Call Telegram
       const telegramMethod = action === "approve"
         ? "approveChatJoinRequest"
         : "declineChatJoinRequest";
@@ -286,9 +280,7 @@ exports.handler = async (event) => {
         `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/${telegramMethod}`,
         {
           method: "POST",
-          headers: {
-            "Content-Type": "application/json"
-          },
+          headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             chat_id: Number(chatId),
             user_id: Number(userId)
@@ -311,29 +303,17 @@ exports.handler = async (event) => {
 
       // Update join request status
       const updateUrl = new URL(tableUrl);
+      updateUrl.searchParams.set("telegram_user_id", `eq.${userId}`);
+      updateUrl.searchParams.set("chat_id", `eq.${chatId}`);
 
-      updateUrl.searchParams.set(
-        "telegram_user_id",
-        `eq.${userId}`
-      );
-      updateUrl.searchParams.set(
-        "chat_id",
-        `eq.${chatId}`
-      );
-
-      const joinUpdateResponse = await fetch(
-        updateUrl.toString(),
-        {
-          method: "PATCH",
-          headers: {
-            ...supabaseHeaders,
-            Prefer: "return=representation"
-          },
-          body: JSON.stringify({
-            status: newStatus
-          })
-        }
-      );
+      const joinUpdateResponse = await fetch(updateUrl.toString(), {
+        method: "PATCH",
+        headers: {
+          ...supabaseHeaders,
+          Prefer: "return=representation"
+        },
+        body: JSON.stringify({ status: newStatus })
+      });
 
       if (!joinUpdateResponse.ok) {
         throw new Error(await joinUpdateResponse.text());
@@ -348,36 +328,38 @@ exports.handler = async (event) => {
         });
       }
 
-      // Decline: update attribution only
-      if (action === "decline") {
-        if (attribution) {
-          const declineUrl = new URL(attributionUrl);
+      // Update attribution status
+      if (attribution && inviteLink) {
+        const statusUrl = new URL(attributionUrl);
+        statusUrl.searchParams.set("invite_link", `eq.${inviteLink}`);
+        statusUrl.searchParams.set("telegram_user_id", `eq.${userId}`);
 
-          declineUrl.searchParams.set(
-            "invite_link",
-            `eq.${inviteLink}`
-          );
-          declineUrl.searchParams.set(
-            "telegram_user_id",
-            `eq.${userId}`
-          );
+        const statusUpdate = await fetch(statusUrl.toString(), {
+          method: "PATCH",
+          headers: supabaseHeaders,
+          body: JSON.stringify(
+            action === "approve"
+              ? {
+                  status: "approved",
+                  approved_at: new Date().toISOString()
+                }
+              : { status: "declined" }
+          )
+        });
 
-          await fetch(declineUrl.toString(), {
-            method: "PATCH",
-            headers: supabaseHeaders,
-            body: JSON.stringify({
-              status: "declined"
-            })
-          });
+        if (!statusUpdate.ok) {
+          throw new Error(await statusUpdate.text());
         }
+      }
 
+      if (action === "decline") {
         return response(200, {
           success: true,
           message: "Join request declined successfully"
         });
       }
 
-      // Approval: send Meta event once
+      // Approval succeeded, but there is no matching attribution
       if (!attribution) {
         return response(200, {
           success: true,
@@ -386,44 +368,33 @@ exports.handler = async (event) => {
         });
       }
 
+      // Do not send the same event again
       if (attribution.meta_event_sent === true) {
         return response(200, {
           success: true,
           meta_event_sent: true,
-          message: "Already approved and Meta event was already sent."
+          message: "Meta event was already sent."
         });
       }
 
+      // Send Meta Conversions API event
       try {
         const metaResult = await sendMetaSubscribe({
           ...attribution,
           telegram_user_id: userId
         });
 
-        // Mark as sent only after Meta confirms receipt
         const markSentUrl = new URL(attributionUrl);
+        markSentUrl.searchParams.set("invite_link", `eq.${inviteLink}`);
+        markSentUrl.searchParams.set("telegram_user_id", `eq.${userId}`);
 
-        markSentUrl.searchParams.set(
-          "invite_link",
-          `eq.${inviteLink}`
-        );
-        markSentUrl.searchParams.set(
-          "telegram_user_id",
-          `eq.${userId}`
-        );
-
-        const markResponse = await fetch(
-          markSentUrl.toString(),
-          {
-            method: "PATCH",
-            headers: supabaseHeaders,
-            body: JSON.stringify({
-              status: "approved",
-              approved_at: new Date().toISOString(),
-              meta_event_sent: true
-            })
-          }
-        );
+        const markResponse = await fetch(markSentUrl.toString(), {
+          method: "PATCH",
+          headers: supabaseHeaders,
+          body: JSON.stringify({
+            meta_event_sent: true
+          })
+        });
 
         if (!markResponse.ok) {
           throw new Error(
