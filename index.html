@@ -492,7 +492,7 @@
         }());
 
 
-        /* TELEGRAM UNIQUE INVITE LINK */
+        /* TELEGRAM UNIQUE INVITE LINK - BACKGROUND PRELOAD */
 
         (function () {
 
@@ -500,11 +500,15 @@
                 document.getElementById("telegramButton");
 
             var isLoading = false;
+            var invitePromise = null;
+
+            var SESSION_KEY = "stark_telegram_session_id";
+            var INVITE_KEY = "stark_telegram_invite_link";
 
             function getSessionId() {
 
                 var sessionId =
-                    sessionStorage.getItem("stark_telegram_session_id");
+                    sessionStorage.getItem(SESSION_KEY);
 
                 if (!sessionId) {
 
@@ -534,7 +538,7 @@
                     }
 
                     sessionStorage.setItem(
-                        "stark_telegram_session_id",
+                        SESSION_KEY,
                         sessionId
                     );
 
@@ -543,6 +547,7 @@
                 return sessionId;
 
             }
+
 
             function getCookie(name) {
 
@@ -560,7 +565,117 @@
 
             }
 
-            telegramButton.addEventListener("click", async function (event) {
+
+            function fetchInviteLink() {
+
+                var savedLink =
+                    sessionStorage.getItem(INVITE_KEY);
+
+                if (savedLink) {
+                    return Promise.resolve(savedLink);
+                }
+
+                if (invitePromise) {
+                    return invitePromise;
+                }
+
+                var params =
+                    new URLSearchParams(window.location.search);
+
+                var fbclid =
+                    params.get("fbclid");
+
+                var fbc =
+                    getCookie("_fbc");
+
+                var fbp =
+                    getCookie("_fbp");
+
+                if (!fbc && fbclid) {
+
+                    fbc =
+                        "fb.1." +
+                        Date.now() +
+                        "." +
+                        fbclid;
+
+                }
+
+                invitePromise = fetch(
+                    "/.netlify/functions/create-invite",
+                    {
+                        method: "POST",
+
+                        headers: {
+                            "Content-Type": "application/json"
+                        },
+
+                        body: JSON.stringify({
+
+                            session_id: getSessionId(),
+
+                            fbclid: fbclid,
+
+                            fbc: fbc,
+
+                            fbp: fbp
+
+                        })
+                    }
+                )
+                .then(function (response) {
+
+                    return response.json().then(function (data) {
+
+                        if (!response.ok || !data.invite_link) {
+
+                            throw new Error(
+                                data.error ||
+                                "Invite link generation failed"
+                            );
+
+                        }
+
+                        return data.invite_link;
+
+                    });
+
+                })
+                .then(function (link) {
+
+                    sessionStorage.setItem(
+                        INVITE_KEY,
+                        link
+                    );
+
+                    return link;
+
+                })
+                .catch(function (error) {
+
+                    invitePromise = null;
+
+                    throw error;
+
+                });
+
+                return invitePromise;
+
+            }
+
+
+            // Start invite generation immediately in the background.
+            fetchInviteLink().catch(function (error) {
+
+                console.error(
+                    "Telegram preload error:",
+                    error
+                );
+
+            });
+
+
+            telegramButton.addEventListener("click", function (event) {
 
                 event.preventDefault();
 
@@ -574,83 +689,62 @@
                     fbq("track", "Lead");
                 }
 
-                try {
+                var savedLink =
+                    sessionStorage.getItem(INVITE_KEY);
 
-                    var params =
-                        new URLSearchParams(window.location.search);
+                // If link is already ready, open Telegram immediately.
+                if (savedLink) {
 
-                    var fbclid =
-                        params.get("fbclid");
+                    window.location.href = savedLink;
 
-                    var fbc =
-                        getCookie("_fbc");
+                    return;
 
-                    var fbp =
-                        getCookie("_fbp");
+                }
 
-                    if (!fbc && fbclid) {
+                // Otherwise wait for the background request to finish.
+                telegramButton.style.opacity = "0.7";
 
-                        fbc =
-                            "fb.1." +
-                            Date.now() +
-                            "." +
-                            fbclid;
+                fetchInviteLink()
+                    .then(function (link) {
 
-                    }
+                        window.location.href = link;
 
-                    var response = await fetch(
-                        "/.netlify/functions/create-invite",
-                        {
-                            method: "POST",
+                    })
+                    .catch(function (error) {
 
-                            headers: {
-                                "Content-Type": "application/json"
-                            },
-
-                            body: JSON.stringify({
-
-                                session_id: getSessionId(),
-
-                                fbclid: fbclid,
-
-                                fbc: fbc,
-
-                                fbp: fbp
-
-                            })
-
-                        }
-                    );
-
-                    var result = await response.json();
-
-                    if (!response.ok ||
-                        !result.invite_link) {
-
-                        throw new Error(
-                            result.error ||
-                            "Telegram invite could not be generated"
+                        console.error(
+                            "Telegram invite error:",
+                            error
                         );
 
-                    }
+                        alert(
+                            "Unable to open Telegram right now. Please try again."
+                        );
 
-                    window.location.href =
-                        result.invite_link;
+                        isLoading = false;
 
-                } catch (error) {
+                        telegramButton.style.opacity = "1";
+
+                    });
+
+            });
+
+
+            // Restore button state when visitor returns to this page.
+            window.addEventListener("pageshow", function () {
+
+                isLoading = false;
+
+                telegramButton.style.opacity = "1";
+
+                fetchInviteLink().catch(function (error) {
 
                     console.error(
-                        "Telegram invite error:",
+                        "Telegram preload error:",
                         error
                     );
 
-                    alert(
-                        "Unable to open Telegram right now. Please try again."
-                    );
-
-                    isLoading = false;
-
-                }
+                });
 
             });
 
