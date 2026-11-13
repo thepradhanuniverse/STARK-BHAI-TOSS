@@ -1,0 +1,378 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>STARK BHAI TOSS | Admin Dashboard</title>
+<style>
+:root {
+  --bg:#080a0f;
+  --panel:#11151e;
+  --panel2:#171d28;
+  --gold:#e6bd61;
+  --gold2:#ffdf91;
+  --text:#f4f4f5;
+  --muted:#9ca3af;
+  --green:#22c55e;
+  --red:#ef4444;
+  --yellow:#f59e0b;
+  --border:#2a303c;
+}
+*{box-sizing:border-box}
+body{
+  margin:0;background:var(--bg);color:var(--text);
+  font-family:Arial,Helvetica,sans-serif;
+}
+button,input{font:inherit}
+button{cursor:pointer}
+.hidden{display:none!important}
+.wrap{max-width:1250px;margin:auto;padding:24px}
+header{
+  display:flex;justify-content:space-between;align-items:center;
+  gap:16px;flex-wrap:wrap;margin-bottom:26px;
+}
+.brand{display:flex;align-items:center;gap:13px}
+.logo{
+  width:48px;height:48px;border-radius:14px;
+  display:grid;place-items:center;
+  background:linear-gradient(135deg,#f9df9a,#9c6c20);
+  color:#111;font-size:25px;font-weight:900;
+}
+h1{font-size:21px;margin:0}
+.subtitle{font-size:12px;color:var(--muted);margin-top:5px}
+.btn{
+  border:1px solid var(--border);background:var(--panel2);
+  color:var(--text);padding:11px 15px;border-radius:9px;
+}
+.btn.gold{
+  color:#17120a;border:0;font-weight:800;
+  background:linear-gradient(135deg,var(--gold2),#bd872e);
+}
+.btn:disabled{opacity:.5;cursor:not-allowed}
+.card{
+  background:var(--panel);border:1px solid var(--border);
+  border-radius:15px;padding:19px;
+}
+.login{
+  max-width:410px;margin:12vh auto;padding:28px;
+}
+.login h2{margin-top:0;color:var(--gold2)}
+.login input,.toolbar input,.toolbar select{
+  width:100%;padding:12px;background:#090d14;color:white;
+  border:1px solid var(--border);border-radius:9px;outline:none;
+}
+.login input:focus,.toolbar input:focus{border-color:var(--gold)}
+.login .btn{width:100%;margin-top:13px}
+.error{color:#f87171;font-size:13px;margin-top:12px}
+.stats{
+  display:grid;grid-template-columns:repeat(4,1fr);
+  gap:14px;margin-bottom:18px;
+}
+.stat-label{font-size:13px;color:var(--muted)}
+.stat-number{font-size:30px;font-weight:800;margin-top:10px}
+.stat:nth-child(2) .stat-number{color:var(--yellow)}
+.stat:nth-child(3) .stat-number{color:var(--green)}
+.stat:nth-child(4) .stat-number{color:var(--red)}
+.toolbar{
+  display:grid;grid-template-columns:1fr 190px auto;
+  gap:10px;margin-bottom:15px;
+}
+.table-wrap{overflow-x:auto}
+table{width:100%;border-collapse:collapse;min-width:850px}
+th,td{
+  padding:14px 12px;text-align:left;
+  border-bottom:1px solid var(--border);font-size:13px;
+}
+th{color:var(--gold2);font-weight:700}
+td{color:#e5e7eb}
+.muted{color:var(--muted)}
+.pill{
+  display:inline-block;padding:5px 9px;border-radius:30px;
+  font-size:11px;font-weight:700;text-transform:capitalize;
+}
+.pending{background:#49320e;color:#fbbf24}
+.approved{background:#123b27;color:#4ade80}
+.declined{background:#481d22;color:#f87171}
+.actions{display:flex;gap:7px}
+.small{
+  border:0;border-radius:7px;padding:8px 10px;
+  color:white;font-size:12px;font-weight:700;
+}
+.approve{background:#15803d}
+.reject{background:#b91c1c}
+.notice{color:var(--muted);font-size:12px;margin-top:13px}
+#message{margin:12px 0;font-size:13px}
+@media(max-width:750px){
+  .wrap{padding:15px}
+  .stats{grid-template-columns:repeat(2,1fr)}
+  .toolbar{grid-template-columns:1fr}
+  .stat-number{font-size:25px}
+}
+</style>
+</head>
+<body>
+
+<div id="loginPanel" class="wrap">
+  <div class="card login">
+    <div class="brand">
+      <div class="logo">S</div>
+      <div>
+        <h1>STARK BHAI TOSS</h1>
+        <div class="subtitle">SECURE ADMIN PANEL</div>
+      </div>
+    </div>
+    <hr style="border:0;border-top:1px solid var(--border);margin:23px 0">
+    <h2>Admin Login</h2>
+    <p class="subtitle">Enter your dashboard password to continue.</p>
+    <input id="password" type="password" placeholder="Enter admin password" autocomplete="current-password">
+    <button class="btn gold" id="loginBtn" onclick="login()">LOGIN TO DASHBOARD</button>
+    <div id="loginError" class="error"></div>
+  </div>
+</div>
+
+<div id="dashboard" class="wrap hidden">
+  <header>
+    <div class="brand">
+      <div class="logo">S</div>
+      <div>
+        <h1>STARK BHAI TOSS</h1>
+        <div class="subtitle">TELEGRAM JOIN REQUEST CONTROL CENTER</div>
+      </div>
+    </div>
+    <div style="display:flex;gap:9px">
+      <button class="btn" onclick="loadData()">↻ Refresh</button>
+      <button class="btn" onclick="logout()">Logout</button>
+    </div>
+  </header>
+
+  <div class="stats">
+    <div class="card stat">
+      <div class="stat-label">TOTAL REQUESTS</div>
+      <div class="stat-number" id="total">0</div>
+    </div>
+    <div class="card stat">
+      <div class="stat-label">PENDING</div>
+      <div class="stat-number" id="pending">0</div>
+    </div>
+    <div class="card stat">
+      <div class="stat-label">APPROVED</div>
+      <div class="stat-number" id="approved">0</div>
+    </div>
+    <div class="card stat">
+      <div class="stat-label">DECLINED</div>
+      <div class="stat-number" id="declined">0</div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="toolbar">
+      <input id="search" placeholder="Search name, username or Telegram ID..." oninput="renderRows()">
+      <select id="filter" onchange="renderRows()">
+        <option value="all">All statuses</option>
+        <option value="pending">Pending</option>
+        <option value="approved">Approved</option>
+        <option value="declined">Declined</option>
+      </select>
+      <button class="btn gold" onclick="loadData()">LOAD LATEST</button>
+    </div>
+    <div id="message" class="muted">Login to load join requests.</div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>USER</th>
+            <th>TELEGRAM ID</th>
+            <th>REQUEST TIME</th>
+            <th>INVITE LINK</th>
+            <th>STATUS</th>
+            <th>ACTION</th>
+          </tr>
+        </thead>
+        <tbody id="rows">
+          <tr><td colspan="6" class="muted">No data loaded.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="notice">
+      STARK BHAI TOSS • Private Admin Dashboard • Keep your password confidential.
+    </div>
+  </div>
+</div>
+
+<script>
+const API = "/.netlify/functions/admin-api";
+let adminPassword = "";
+let requests = [];
+let busy = false;
+
+async function apiFetch(method="GET", data=null) {
+  const options = {
+    method,
+    headers: {"x-admin-password": adminPassword}
+  };
+
+  if(data) {
+    options.headers["Content-Type"] = "application/json";
+    options.body = JSON.stringify(data);
+  }
+
+  const res = await fetch(API, options);
+  const result = await res.json();
+
+  if(res.status === 401) {
+    logout();
+    throw new Error("Session expired or password incorrect. Please login again.");
+  }
+
+  if(!res.ok || !result.success) {
+    throw new Error(result.message || "Request failed");
+  }
+
+  return result;
+}
+
+async function login() {
+  const password = document.getElementById("password").value;
+  const error = document.getElementById("loginError");
+  const button = document.getElementById("loginBtn");
+
+  if(!password) {
+    error.textContent = "Please enter your password.";
+    return;
+  }
+
+  adminPassword = password;
+  button.disabled = true;
+  button.textContent = "VERIFYING...";
+  error.textContent = "";
+
+  try {
+    const result = await apiFetch("GET");
+    document.getElementById("loginPanel").classList.add("hidden");
+    document.getElementById("dashboard").classList.remove("hidden");
+    showData(result);
+  } catch(e) {
+    adminPassword = "";
+    error.textContent = e.message;
+  } finally {
+    button.disabled = false;
+    button.textContent = "LOGIN TO DASHBOARD";
+  }
+}
+
+function logout() {
+  adminPassword = "";
+  requests = [];
+  document.getElementById("dashboard").classList.add("hidden");
+  document.getElementById("loginPanel").classList.remove("hidden");
+  document.getElementById("password").value = "";
+  document.getElementById("loginError").textContent = "";
+  document.getElementById("message").textContent = "Logged out.";
+}
+
+async function loadData() {
+  if(busy) return;
+  busy = true;
+  document.getElementById("message").textContent = "Loading requests...";
+
+  try {
+    const result = await apiFetch("GET");
+    showData(result);
+  } catch(e) {
+    document.getElementById("message").textContent = e.message;
+  } finally {
+    busy = false;
+  }
+}
+
+function showData(data) {
+  requests = data.requests || [];
+  document.getElementById("total").textContent = data.total ?? requests.length;
+  document.getElementById("pending").textContent = data.pending ?? 0;
+  document.getElementById("approved").textContent = data.approved ?? 0;
+  document.getElementById("declined").textContent = data.declined ?? 0;
+  document.getElementById("message").textContent =
+    "Showing " + requests.length + " latest records.";
+  renderRows();
+}
+
+function safe(value) {
+  return String(value ?? "").replace(/[&<>"']/g, char => ({
+    "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"
+  })[char]);
+}
+
+function renderRows() {
+  const query = document.getElementById("search").value.toLowerCase();
+  const filter = document.getElementById("filter").value;
+
+  const filtered = requests.filter(r => {
+    const name = [r.first_name,r.last_name,r.username,r.telegram_user_id]
+      .join(" ").toLowerCase();
+    return name.includes(query) && (filter === "all" || r.status === filter);
+  });
+
+  const tbody = document.getElementById("rows");
+
+  if(!filtered.length) {
+    tbody.innerHTML = '<tr><td colspan="6" class="muted">No matching requests found.</td></tr>';
+    return;
+  }
+
+  tbody.innerHTML = filtered.map(r => {
+    const name = [r.first_name,r.last_name].filter(Boolean).join(" ") || "Unknown user";
+    const username = r.username ? "@" + r.username : "No username";
+    const status = ["pending","approved","declined"].includes(r.status) ? r.status : "pending";
+    const time = r.requested_at ? new Date(r.requested_at).toLocaleString() : "Not available";
+    const invite = r.invite_link
+      ? '<a href="' + safe(r.invite_link) + '" target="_blank" rel="noopener" style="color:var(--gold2)">Open link</a>'
+      : '<span class="muted">Not available</span>';
+
+    const action = status === "pending"
+      ? '<div class="actions">' +
+        '<button class="small approve" onclick="changeStatus(\\'' + safe(r.telegram_user_id) + '\\',\\'' + safe(r.chat_id) + '\\',\\'approve\\')">Approve</button>' +
+        '<button class="small reject" onclick="changeStatus(\\'' + safe(r.telegram_user_id) + '\\',\\'' + safe(r.chat_id) + '\\',\\'decline\\')">Reject</button>' +
+        '</div>'
+      : '<span class="muted">—</span>';
+
+    return '<tr>' +
+      '<td><strong>' + safe(name) + '</strong><br><span class="muted">' + safe(username) + '</span></td>' +
+      '<td>' + safe(r.telegram_user_id) + '</td>' +
+      '<td>' + safe(time) + '</td>' +
+      '<td>' + invite + '</td>' +
+      '<td><span class="pill ' + status + '">' + status + '</span></td>' +
+      '<td>' + action + '</td>' +
+      '</tr>';
+  }).join("");
+}
+
+async function changeStatus(userId, chatId, action) {
+  const verb = action === "approve" ? "approve" : "reject";
+  if(!confirm("Are you sure you want to " + verb + " this Telegram join request?")) return;
+
+  if(busy) return;
+  busy = true;
+  document.getElementById("message").textContent = "Processing " + verb + " action...";
+
+  try {
+    const result = await apiFetch("POST", {
+      action,
+      telegram_user_id: userId,
+      chat_id: chatId
+    });
+    document.getElementById("message").textContent = result.message;
+    await loadData();
+  } catch(e) {
+    document.getElementById("message").textContent = e.message;
+  } finally {
+    busy = false;
+  }
+}
+
+document.getElementById("password").addEventListener("keydown", e => {
+  if(e.key === "Enter") login();
+});
+</script>
+</body>
+</html>
