@@ -295,10 +295,11 @@
                     el.textContent = target.toLocaleString();
                 }
             }
+
             tick();
         }());
 
-        /* TELEGRAM UNIQUE INVITE LINK - BACKGROUND PRELOAD */
+        /* TELEGRAM INVITE: GENERATE ONLY AFTER BUTTON CLICK */
         (function () {
             var telegramButton = document.getElementById("telegramButton");
             var isLoading = false;
@@ -323,8 +324,10 @@
                             }
                         );
                     }
+
                     sessionStorage.setItem(SESSION_KEY, sessionId);
                 }
+
                 return sessionId;
             }
 
@@ -332,13 +335,20 @@
                 var match = document.cookie.match(
                     new RegExp("(?:^|; )" + name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "=([^;]*)")
                 );
+
                 return match ? decodeURIComponent(match[1]) : null;
             }
 
             function fetchInviteLink() {
                 var savedLink = sessionStorage.getItem(INVITE_KEY);
-                if (savedLink) return Promise.resolve(savedLink);
-                if (invitePromise) return invitePromise;
+
+                if (savedLink) {
+                    return Promise.resolve(savedLink);
+                }
+
+                if (invitePromise) {
+                    return invitePromise;
+                }
 
                 var params = new URLSearchParams(window.location.search);
                 var fbclid = params.get("fbclid");
@@ -351,7 +361,9 @@
 
                 invitePromise = fetch("/.netlify/functions/create-invite", {
                     method: "POST",
-                    headers: { "Content-Type": "application/json" },
+                    headers: {
+                        "Content-Type": "application/json"
+                    },
                     body: JSON.stringify({
                         session_id: getSessionId(),
                         fbclid: fbclid,
@@ -364,6 +376,7 @@
                         if (!response.ok || !data.invite_link) {
                             throw new Error(data.error || "Invite link generation failed");
                         }
+
                         return data.invite_link;
                     });
                 })
@@ -379,30 +392,21 @@
                 return invitePromise;
             }
 
-            // Start invite generation immediately in the background.
-            fetchInviteLink().catch(function (error) {
-                console.error("Telegram preload error:", error);
-            });
-
             telegramButton.addEventListener("click", function (event) {
                 event.preventDefault();
 
                 if (isLoading) return;
+
                 isLoading = true;
 
-                // Track Telegram button click separately from actual join request.
                 if (typeof fbq === "function") {
                     fbq("trackCustom", "TelegramClick");
                 }
 
-                var savedLink = sessionStorage.getItem(INVITE_KEY);
-
-                if (savedLink) {
-                    window.location.href = savedLink;
-                    return;
-                }
-
                 telegramButton.style.opacity = "0.7";
+                telegramButton.style.pointerEvents = "none";
+                telegramButton.innerHTML =
+                    'PLEASE WAIT... <i class="fa fa-spinner fa-spin"></i>';
 
                 fetchInviteLink()
                     .then(function (link) {
@@ -410,20 +414,15 @@
                     })
                     .catch(function (error) {
                         console.error("Telegram invite error:", error);
+
                         alert("Unable to open Telegram right now. Please try again.");
+
                         isLoading = false;
                         telegramButton.style.opacity = "1";
+                        telegramButton.style.pointerEvents = "auto";
+                        telegramButton.innerHTML =
+                            'JOIN TELEGRAM CHANNEL <i class="fa fa-telegram" style="font-size:23px;color:#ffffff"></i>';
                     });
-            });
-
-            // Restore button state when visitor returns to this page.
-            window.addEventListener("pageshow", function () {
-                isLoading = false;
-                telegramButton.style.opacity = "1";
-
-                fetchInviteLink().catch(function (error) {
-                    console.error("Telegram preload error:", error);
-                });
             });
         }());
 
