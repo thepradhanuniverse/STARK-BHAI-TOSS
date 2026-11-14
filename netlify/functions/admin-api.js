@@ -37,10 +37,12 @@ async function sha256(value) {
     .join("");
 }
 
+
 async function sendMetaSubscribe(attribution, userId) {
   const {
     META_PIXEL_ID,
-    META_ACCESS_TOKEN
+    META_ACCESS_TOKEN,
+    META_TEST_EVENT_CODE
   } = process.env;
 
   if (!META_PIXEL_ID || !META_ACCESS_TOKEN) {
@@ -55,13 +57,11 @@ async function sendMetaSubscribe(attribution, userId) {
   if (attribution.fbp) userData.fbp = attribution.fbp;
 
   if (attribution.client_ip_address) {
-    userData.client_ip_address =
-      attribution.client_ip_address;
+    userData.client_ip_address = attribution.client_ip_address;
   }
 
   if (attribution.client_user_agent) {
-    userData.client_user_agent =
-      attribution.client_user_agent;
+    userData.client_user_agent = attribution.client_user_agent;
   }
 
   const payload = {
@@ -72,7 +72,10 @@ async function sendMetaSubscribe(attribution, userId) {
       action_source: "website",
       event_source_url: "https://starkxcricket.netlify.app/",
       user_data: userData
-    }]
+    }],
+    ...(META_TEST_EVENT_CODE
+      ? { test_event_code: META_TEST_EVENT_CODE }
+      : {})
   };
 
   const metaResponse = await fetch(
@@ -101,6 +104,7 @@ async function sendMetaSubscribe(attribution, userId) {
 
   return result;
 }
+
 
 exports.handler = async (event) => {
   try {
