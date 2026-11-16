@@ -217,6 +217,15 @@
             font-size: 22px;
         }
 
+        /* Countdown urgency colors */
+        #seconds { color: #22c55e; transition: color .25s ease; }
+        #seconds.timer-yellow { color: #facc15; }
+        #seconds.timer-red { color: #ef4444; animation: timerPulse .55s infinite alternate; }
+        @keyframes timerPulse {
+            from { opacity: 1; }
+            to { opacity: .55; }
+        }
+
         @media (max-width: 480px) {
             .title { font-size: 20px; }
             .subtitle { font-size: 16px; }
@@ -271,17 +280,13 @@
             <i class="fa fa-whatsapp"></i>
         </a>
 
-        <!-- AD MANAGED BY BUTTON -->
-        <a href="https://telegram.me/starkivemedia18" class="join-btn" id="adManagedButton" style="margin-top:12px; font-size:14px; animation:none;">
-            AD MANAGED BY
-            <i class="fa fa-telegram" style="font-size:20px;color:#ffffff"></i>
-        </a>
+
     </div>
 
     <script>
         /* SUBSCRIBER COUNTER */
         (function () {
-            var target = 66789;
+            var target = 30246;
             var count = 0;
             var el = document.getElementById("subCounter");
 
@@ -437,17 +442,37 @@
             });
         }());
 
-        /* 20 SECOND TIMER - TIMER ONLY */
+        /* 20 SECOND COUNTDOWN - sends a diagnostic custom event only.
+           Lead remains reserved for a real Telegram join request on the server. */
         (function () {
             var seconds = 20;
             var timer = document.getElementById("seconds");
+            var completed = false;
+
+            function updateTimerColor() {
+                timer.classList.remove("timer-yellow", "timer-red");
+                if (seconds <= 5) {
+                    timer.classList.add("timer-red");
+                } else if (seconds <= 10) {
+                    timer.classList.add("timer-yellow");
+                }
+            }
+
+            updateTimerColor();
 
             var interval = setInterval(function () {
                 if (seconds > 0) {
                     seconds--;
                     timer.textContent = seconds;
+                    updateTimerColor();
                 } else {
                     clearInterval(interval);
+                    if (!completed) {
+                        completed = true;
+                        if (typeof fbq === "function") {
+                            fbq("trackCustom", "TimerCompleted");
+                        }
+                    }
                 }
             }, 1000);
         }());
