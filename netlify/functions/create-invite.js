@@ -1,7 +1,12 @@
 
 exports.handler = async (event) => {
+  const siteUrl = (process.env.SITE_URL || "https://starkbhaitoss.netlify.app").replace(/\/$/, "");
+  const origin = event.headers?.origin || event.headers?.Origin || "";
+  const allowedOrigins = new Set([siteUrl]);
+
   const headers = {
-    "Access-Control-Allow-Origin": "https://starkxcricket.netlify.app",
+    "Access-Control-Allow-Origin": allowedOrigins.has(origin) ? origin : siteUrl,
+    "Vary": "Origin",
     "Access-Control-Allow-Headers": "Content-Type",
     "Access-Control-Allow-Methods": "POST, OPTIONS",
     "Content-Type": "application/json"
@@ -24,11 +29,12 @@ exports.handler = async (event) => {
   try {
     const {
       TELEGRAM_BOT_TOKEN,
+      TELEGRAM_CHAT_ID,
       SUPABASE_URL,
       SUPABASE_SERVICE_ROLE_KEY
     } = process.env;
 
-    if (!TELEGRAM_BOT_TOKEN || !SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
+    if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID || !SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
       throw new Error("Required environment variables are missing");
     }
 
@@ -65,19 +71,15 @@ exports.handler = async (event) => {
       null;
 
     const clientUserAgent =
-      event.headers?.["user-agent"] ||
-      null;
+      event.headers?.["user-agent"] || null;
 
-    // 1. Check whether this session already has an invite link.
+    // 1. Check existing invite for this session.
     const existingUrl = new URL(
       `${supabase}/rest/v1/telegram_attributions`
     );
 
     existingUrl.searchParams.set("session_id", `eq.${session_id}`);
-    existingUrl.searchParams.set(
-      "select",
-      "id,invite_link"
-    );
+    existingUrl.searchParams.set("select", "id,invite_link");
     existingUrl.searchParams.set("order", "created_at.desc");
     existingUrl.searchParams.set("limit", "1");
 
@@ -95,7 +97,7 @@ exports.handler = async (event) => {
     const existingRows = await existingResponse.json();
     const existingRecord = existingRows[0] || null;
 
-    // Reuse the same invite link for the same browser session.
+    // Reuse existing invite link.
     if (existingRecord?.invite_link) {
       return reply(200, {
         invite_link: existingRecord.invite_link,
@@ -103,35 +105,7 @@ exports.handler = async (event) => {
       });
     }
 
-    // 2. Find the Telegram channel ID from existing join requests.
-    const chatUrl = new URL(
-      `${supabase}/rest/v1/telegram_join_requests`
-    );
-
-    chatUrl.searchParams.set("select", "chat_id");
-    chatUrl.searchParams.set("order", "requested_at.desc");
-    chatUrl.searchParams.set("limit", "1");
-
-    const chatResponse = await fetch(chatUrl.toString(), {
-      headers: dbHeaders
-    });
-
-    if (!chatResponse.ok) {
-      throw new Error(
-        "Telegram channel lookup failed: " +
-        await chatResponse.text()
-      );
-    }
-
-    const chatRows = await chatResponse.json();
-
-    if (!chatRows.length || !chatRows[0].chat_id) {
-      throw new Error("No Telegram channel ID found");
-    }
-
-    const chatId = chatRows[0].chat_id;
-
-    // 3. Create a new Telegram invite link.
+    // 2. Use the fixed Telegram channel ID from Netlify environment variables.
     const telegramResponse = await fetch(
       `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/createChatInviteLink`,
       {
@@ -140,7 +114,7 @@ exports.handler = async (event) => {
           "Content-Type": "application/json"
         },
         body: JSON.stringify({
-          chat_id: chatId,
+          chat_id: TELEGRAM_CHAT_ID,
           name: `SX-${session_id.slice(0, 8)}`,
           creates_join_request: true
         })
@@ -162,7 +136,7 @@ exports.handler = async (event) => {
 
     const inviteLink = telegramData.result.invite_link;
 
-    // 4. Prepare attribution data.
+    // 3. Prepare attribution data.
     const attributionData = {
       session_id,
       invite_link: inviteLink,
@@ -177,7 +151,6 @@ exports.handler = async (event) => {
 
     let saveResponse;
 
-    // Update an existing session record if it has no invite link.
     if (existingRecord?.id) {
       const updateUrl = new URL(
         `${supabase}/rest/v1/telegram_attributions`
@@ -194,7 +167,6 @@ exports.handler = async (event) => {
         body: JSON.stringify(attributionData)
       });
     } else {
-      // Otherwise create a new attribution record.
       saveResponse = await fetch(
         `${supabase}/rest/v1/telegram_attributions`,
         {
