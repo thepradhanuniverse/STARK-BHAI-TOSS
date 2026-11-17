@@ -14,6 +14,7 @@ exports.handler = async (event) => {
       TELEGRAM_WEBHOOK_SECRET,
       META_PIXEL_ID,
       META_ACCESS_TOKEN,
+      META_TEST_EVENT_CODE,
       SITE_URL
     } = process.env;
 
@@ -259,6 +260,9 @@ exports.handler = async (event) => {
       }
 
       const metaPayload = {
+        ...(META_TEST_EVENT_CODE
+          ? { test_event_code: META_TEST_EVENT_CODE }
+          : {}),
         data: [{
           event_name: item.eventName,
           event_time: request.date,
