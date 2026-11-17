@@ -13,7 +13,8 @@ exports.handler = async (event) => {
       SUPABASE_SERVICE_ROLE_KEY,
       TELEGRAM_WEBHOOK_SECRET,
       META_PIXEL_ID,
-      META_ACCESS_TOKEN
+      META_ACCESS_TOKEN,
+      SITE_URL
     } = process.env;
 
     if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
@@ -75,8 +76,7 @@ exports.handler = async (event) => {
     const requestedAt =
       new Date(request.date * 1000).toISOString();
 
-    // 1. Save the Telegram join request.
-    // Ignore duplicates so an old webhook cannot reset an approved request.
+    // 1. Save Telegram join request.
     const record = {
       telegram_user_id: user.id,
       username: user.username || null,
@@ -108,7 +108,7 @@ exports.handler = async (event) => {
       );
     }
 
-    // 2. Match the invite link to the visitor attribution.
+    // 2. Match invite link with visitor attribution.
     if (!inviteLink) {
       console.warn("Join request received without invite link");
 
@@ -128,7 +128,7 @@ exports.handler = async (event) => {
 
     attributionUrl.searchParams.set(
       "select",
-      "id,telegram_user_id,invite_link,fbc,fbp,client_ip_address,client_user_agent,lead_event_sent,status"
+      "id,telegram_user_id,invite_link,fbc,fbp,client_ip_address,client_user_agent,lead_event_sent,meta_event_sent,status"
     );
 
     attributionUrl.searchParams.set("limit", "1");
@@ -157,7 +157,7 @@ exports.handler = async (event) => {
       };
     }
 
-    // 3. Update attribution without overwriting approved status.
+    // 3. Update attribution.
     const statusUrl =
       new URL(`${supabase}/rest/v1/telegram_attributions`);
 
@@ -194,22 +194,13 @@ exports.handler = async (event) => {
       );
     }
 
-    // 4. Send Meta Lead only when credentials are configured.
+    // 4. Meta CAPI configuration check.
     if (!META_PIXEL_ID || !META_ACCESS_TOKEN) {
-      console.error("Meta CAPI credentials missing; Lead not sent");
+      console.error("Meta CAPI credentials missing");
 
       return {
         statusCode: 200,
         body: "Join request saved; Meta CAPI is not configured"
-      };
-    }
-
-    if (attribution.lead_event_sent === true) {
-      console.log("Lead already marked sent; skipping");
-
-      return {
-        statusCode: 200,
-        body: "Join request saved; Lead already processed"
       };
     }
 
@@ -237,80 +228,119 @@ exports.handler = async (event) => {
         attribution.client_user_agent;
     }
 
-    const metaPayload = {
-      data: [{
-        event_name: "Lead",
-        event_time: request.date,
-        event_id: `telegram-join-request-${chat.id}-${user.id}`,
-        action_source: "website",
-        event_source_url: "https://starkxcricket.netlify.app/",
-        user_data: userData
-      }]
-    };
+    const eventSourceUrl =
+      (SITE_URL || "https://starkbhaitoss.netlify.app").replace(/\/$/, "") + "/";
 
-    const metaResponse = await fetch(
-      `https://graph.facebook.com/v25.0/${META_PIXEL_ID}/events`,
+    const baseEventId =
+      `telegram-join-request-${chat.id}-${user.id}`;
+
+    // Lead and Subscribe have separate event IDs and flags.
+    const eventsToSend = [
       {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${META_ACCESS_TOKEN}`
-        },
-        body: JSON.stringify(metaPayload)
+        eventName: "Lead",
+        flag: "lead_event_sent",
+        eventId: `${baseEventId}-lead`,
+        alreadySent: attribution.lead_event_sent === true
+      },
+      {
+        eventName: "Subscribe",
+        flag: "meta_event_sent",
+        eventId: `${baseEventId}-subscribe`,
+        alreadySent: attribution.meta_event_sent === true
       }
-    );
+    ];
 
-    const metaResult = await metaResponse.json();
+    const results = [];
 
-    if (
-      !metaResponse.ok ||
-      metaResult.error ||
-      metaResult.events_received !== 1
-    ) {
-      console.error("Meta Lead CAPI error:", metaResult);
+    for (const item of eventsToSend) {
+      if (item.alreadySent) {
+        results.push(`${item.eventName}: already sent`);
+        continue;
+      }
 
-      // Keep the request saved. The false flag allows later manual retry.
-      return {
-        statusCode: 200,
-        body: "Join request saved; Meta Lead delivery failed"
+      const metaPayload = {
+        data: [{
+          event_name: item.eventName,
+          event_time: request.date,
+          event_id: item.eventId,
+          action_source: "website",
+          event_source_url: eventSourceUrl,
+          user_data: userData
+        }]
       };
-    }
 
-    // 5. Mark Lead sent after Meta confirms receipt.
-    const markUrl =
-      new URL(`${supabase}/rest/v1/telegram_attributions`);
-
-    markUrl.searchParams.set(
-      "id",
-      `eq.${attribution.id}`
-    );
-
-    const markResponse = await fetch(
-      markUrl.toString(),
-      {
-        method: "PATCH",
-        headers: {
-          ...dbHeaders,
-          Prefer: "return=minimal"
-        },
-        body: JSON.stringify({
-          lead_event_sent: true
-        })
-      }
-    );
-
-    if (!markResponse.ok) {
-      console.error(
-        "Meta received Lead, but database flag update failed:",
-        await markResponse.text()
+      const metaResponse = await fetch(
+        `https://graph.facebook.com/v25.0/${META_PIXEL_ID}/events`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${META_ACCESS_TOKEN}`
+          },
+          body: JSON.stringify(metaPayload)
+        }
       );
+
+      const metaResult = await metaResponse.json();
+
+      if (
+        !metaResponse.ok ||
+        metaResult.error ||
+        metaResult.events_received !== 1
+      ) {
+        console.error(
+          `Meta ${item.eventName} CAPI error:`,
+          metaResult
+        );
+
+        results.push(`${item.eventName}: failed`);
+        continue;
+      }
+
+      // Mark each event separately after Meta acknowledges it.
+      const markUrl =
+        new URL(`${supabase}/rest/v1/telegram_attributions`);
+
+      markUrl.searchParams.set(
+        "id",
+        `eq.${attribution.id}`
+      );
+
+      const markResponse = await fetch(
+        markUrl.toString(),
+        {
+          method: "PATCH",
+          headers: {
+            ...dbHeaders,
+            Prefer: "return=minimal"
+          },
+          body: JSON.stringify({
+            [item.flag]: true
+          })
+        }
+      );
+
+      if (!markResponse.ok) {
+        console.error(
+          `Database flag update failed for ${item.eventName}:`,
+          await markResponse.text()
+        );
+
+        results.push(`${item.eventName}: sent, flag update failed`);
+      } else {
+        results.push(`${item.eventName}: sent`);
+      }
     }
 
-    console.log("Telegram request processed:", user.id);
+    console.log(
+      "Telegram request processed:",
+      user.id,
+      results
+    );
 
     return {
       statusCode: 200,
-      body: "Join request and attribution processed"
+      body: `Join request processed: ${results.join("; ")}`
     };
 
   } catch (error) {
@@ -325,7 +355,11 @@ exports.handler = async (event) => {
 
 async function sha256(value) {
   const data = new TextEncoder().encode(value);
-  const hash = await crypto.subtle.digest("SHA-256", data);
+
+  const hash = await crypto.subtle.digest(
+    "SHA-256",
+    data
+  );
 
   return Array.from(new Uint8Array(hash))
     .map(byte => byte.toString(16).padStart(2, "0"))
