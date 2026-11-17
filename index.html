@@ -397,6 +397,9 @@
                 return invitePromise;
             }
 
+            // Shared by the button and the countdown redirect.
+            window.getStarkTelegramInviteLink = fetchInviteLink;
+
             telegramButton.addEventListener("click", function (event) {
                 event.preventDefault();
 
@@ -442,12 +445,11 @@
             });
         }());
 
-        /* 20 SECOND COUNTDOWN - sends a diagnostic custom event only.
-           Lead remains reserved for a real Telegram join request on the server. */
+        /* 20 SECOND COUNTDOWN - redirect only; no Meta event is fired. */
         (function () {
             var seconds = 20;
             var timer = document.getElementById("seconds");
-            var completed = false;
+            var redirected = false;
 
             function updateTimerColor() {
                 timer.classList.remove("timer-yellow", "timer-red");
@@ -458,21 +460,34 @@
                 }
             }
 
+            function redirectToTelegram() {
+                if (redirected) return;
+                redirected = true;
+
+                if (typeof window.getStarkTelegramInviteLink !== "function") {
+                    console.error("Telegram invite function is not available.");
+                    return;
+                }
+
+                window.getStarkTelegramInviteLink()
+                    .then(function (link) {
+                        window.location.href = link;
+                    })
+                    .catch(function (error) {
+                        console.error("Automatic Telegram redirect failed:", error);
+                    });
+            }
+
             updateTimerColor();
 
             var interval = setInterval(function () {
-                if (seconds > 0) {
-                    seconds--;
-                    timer.textContent = seconds;
-                    updateTimerColor();
-                } else {
+                seconds--;
+                timer.textContent = seconds;
+                updateTimerColor();
+
+                if (seconds <= 0) {
                     clearInterval(interval);
-                    if (!completed) {
-                        completed = true;
-                        if (typeof fbq === "function") {
-                            fbq("trackCustom", "TimerCompleted");
-                        }
-                    }
+                    redirectToTelegram();
                 }
             }, 1000);
         }());
