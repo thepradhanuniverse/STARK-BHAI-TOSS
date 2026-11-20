@@ -232,6 +232,60 @@
             .info-list { font-size: 16px; }
             .accuracy { font-size: 15px; }
         }
+
+
+        /* BOTTOM-LEFT PROMOTIONAL POPUP */
+        .social-popup {
+            position: fixed;
+            left: 14px;
+            bottom: 18px;
+            z-index: 9999;
+            width: min(290px, calc(100vw - 28px));
+            padding: 12px 14px;
+            display: flex;
+            align-items: center;
+            gap: 11px;
+            text-align: left;
+            color: #fff;
+            background: linear-gradient(135deg, #092b55, #07172d);
+            border: 1px solid rgba(100, 180, 255, .65);
+            border-radius: 12px;
+            box-shadow: 0 8px 28px rgba(0,0,0,.45);
+            opacity: 0;
+            transform: translateX(-120%);
+            transition: opacity .4s ease, transform .4s ease;
+            pointer-events: none;
+        }
+
+        .social-popup.show {
+            opacity: 1;
+            transform: translateX(0);
+        }
+
+        .popup-icon {
+            width: 39px;
+            height: 39px;
+            flex-shrink: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 50%;
+            background: #168de2;
+            font-size: 21px;
+        }
+
+        .popup-title {
+            font-size: 13px;
+            font-weight: 800;
+            margin-bottom: 3px;
+        }
+
+        .popup-message {
+            font-size: 11px;
+            color: #c8ddf5;
+            line-height: 1.4;
+        }
+
     </style>
 </head>
 
@@ -256,8 +310,9 @@
 
         <p class="join-fast">JOIN FAST <span>👇</span></p>
 
-        <!-- TELEGRAM BUTTON -->
-        <a href="#" class="join-btn" id="telegramButton">
+        <!-- TELEGRAM BUTTON: DIRECT PERMANENT INVITE LINK -->
+        <a href="https://telegram.me/+AgcwI8HCXQ80MWRl"
+           class="join-btn" id="telegramButton" target="_blank" rel="noopener">
             JOIN TELEGRAM CHANNEL
             <i class="fa fa-telegram" style="font-size:23px;color:#ffffff"></i>
         </a>
@@ -304,133 +359,14 @@
             tick();
         }());
 
-        /* TELEGRAM INVITE: GENERATE ONLY AFTER BUTTON CLICK */
+        /* TELEGRAM DIRECT LINK + META PIXEL EVENT */
         (function () {
             var telegramButton = document.getElementById("telegramButton");
-            var isLoading = false;
-            var invitePromise = null;
 
-            var SESSION_KEY = "stark_telegram_session_id";
-            var INVITE_KEY = "stark_telegram_invite_link";
-
-            function getSessionId() {
-                var sessionId = sessionStorage.getItem(SESSION_KEY);
-
-                if (!sessionId) {
-                    if (window.crypto && typeof window.crypto.randomUUID === "function") {
-                        sessionId = window.crypto.randomUUID();
-                    } else {
-                        sessionId = "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(
-                            /[xy]/g,
-                            function (c) {
-                                var r = Math.random() * 16 | 0;
-                                var v = c === "x" ? r : (r & 0x3 | 0x8);
-                                return v.toString(16);
-                            }
-                        );
-                    }
-
-                    sessionStorage.setItem(SESSION_KEY, sessionId);
-                }
-
-                return sessionId;
-            }
-
-            function getCookie(name) {
-                var match = document.cookie.match(
-                    new RegExp("(?:^|; )" + name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "=([^;]*)")
-                );
-
-                return match ? decodeURIComponent(match[1]) : null;
-            }
-
-            function fetchInviteLink() {
-                var savedLink = sessionStorage.getItem(INVITE_KEY);
-
-                if (savedLink) {
-                    return Promise.resolve(savedLink);
-                }
-
-                if (invitePromise) {
-                    return invitePromise;
-                }
-
-                var params = new URLSearchParams(window.location.search);
-                var fbclid = params.get("fbclid");
-                var fbc = getCookie("_fbc");
-                var fbp = getCookie("_fbp");
-
-                if (!fbc && fbclid) {
-                    fbc = "fb.1." + Date.now() + "." + fbclid;
-                }
-
-                invitePromise = fetch("/.netlify/functions/create-invite", {
-                    method: "POST",
-                    headers: {
-                        "Content-Type": "application/json"
-                    },
-                    body: JSON.stringify({
-                        session_id: getSessionId(),
-                        fbclid: fbclid,
-                        fbc: fbc,
-                        fbp: fbp
-                    })
-                })
-                .then(function (response) {
-                    return response.json().then(function (data) {
-                        if (!response.ok || !data.invite_link) {
-                            throw new Error(data.error || "Invite link generation failed");
-                        }
-
-                        return data.invite_link;
-                    });
-                })
-                .then(function (link) {
-                    sessionStorage.setItem(INVITE_KEY, link);
-                    return link;
-                })
-                .catch(function (error) {
-                    invitePromise = null;
-                    throw error;
-                });
-
-                return invitePromise;
-            }
-
-            // Shared by the button and the countdown redirect.
-            window.getStarkTelegramInviteLink = fetchInviteLink;
-
-            telegramButton.addEventListener("click", function (event) {
-                event.preventDefault();
-
-                if (isLoading) return;
-
-                isLoading = true;
-
+            telegramButton.addEventListener("click", function () {
                 if (typeof fbq === "function") {
                     fbq("trackCustom", "TelegramClick");
                 }
-
-                telegramButton.style.opacity = "0.7";
-                telegramButton.style.pointerEvents = "none";
-                telegramButton.innerHTML =
-                    'PLEASE WAIT... <i class="fa fa-spinner fa-spin"></i>';
-
-                fetchInviteLink()
-                    .then(function (link) {
-                        window.location.href = link;
-                    })
-                    .catch(function (error) {
-                        console.error("Telegram invite error:", error);
-
-                        alert("Unable to open Telegram right now. Please try again.");
-
-                        isLoading = false;
-                        telegramButton.style.opacity = "1";
-                        telegramButton.style.pointerEvents = "auto";
-                        telegramButton.innerHTML =
-                            'JOIN TELEGRAM CHANNEL <i class="fa fa-telegram" style="font-size:23px;color:#ffffff"></i>';
-                    });
             });
         }());
 
@@ -445,14 +381,14 @@
             });
         }());
 
-        /* 20 SECOND COUNTDOWN - redirect only; no Meta event is fired. */
+        /* 20 SECOND COUNTDOWN - DISPLAY ONLY, NO AUTO REDIRECT */
         (function () {
             var seconds = 20;
             var timer = document.getElementById("seconds");
-            var redirected = false;
 
             function updateTimerColor() {
                 timer.classList.remove("timer-yellow", "timer-red");
+
                 if (seconds <= 5) {
                     timer.classList.add("timer-red");
                 } else if (seconds <= 10) {
@@ -460,37 +396,78 @@
                 }
             }
 
-            function redirectToTelegram() {
-                if (redirected) return;
-                redirected = true;
-
-                if (typeof window.getStarkTelegramInviteLink !== "function") {
-                    console.error("Telegram invite function is not available.");
-                    return;
-                }
-
-                window.getStarkTelegramInviteLink()
-                    .then(function (link) {
-                        window.location.href = link;
-                    })
-                    .catch(function (error) {
-                        console.error("Automatic Telegram redirect failed:", error);
-                    });
-            }
-
             updateTimerColor();
 
             var interval = setInterval(function () {
-                seconds--;
-                timer.textContent = seconds;
-                updateTimerColor();
+                if (seconds > 0) {
+                    seconds--;
+                    timer.textContent = seconds;
+                    updateTimerColor();
+                }
 
                 if (seconds <= 0) {
                     clearInterval(interval);
-                    redirectToTelegram();
                 }
             }, 1000);
         }());
+
+        /* PROMOTIONAL POPUP NOTIFICATIONS (NOT LIVE JOIN CLAIMS) */
+        (function () {
+            var popup = document.getElementById("socialPopup");
+            var title = document.getElementById("popupTitle");
+            var message = document.getElementById("popupMessage");
+
+            var notifications = [
+                {
+                    title: "🔥 STARK BHAI TOSS",
+                    message: "Join our Telegram community now!"
+                },
+                {
+                    title: "👑 CRICKET FANS",
+                    message: "Explore STARK BHAI TOSS updates."
+                },
+                {
+                    title: "🚀 JOIN TELEGRAM",
+                    message: "Tap the button and visit our channel."
+                },
+                {
+                    title: "🏏 STARK BHAI COMMUNITY",
+                    message: "Your cricket updates are waiting!"
+                }
+            ];
+
+            var index = 0;
+
+            function showPopup() {
+                var item = notifications[index];
+                title.textContent = item.title;
+                message.textContent = item.message;
+                popup.classList.add("show");
+
+                setTimeout(function () {
+                    popup.classList.remove("show");
+                }, 4000);
+
+                index = (index + 1) % notifications.length;
+            }
+
+            setTimeout(function () {
+                showPopup();
+                setInterval(showPopup, 9000);
+            }, 2500);
+        }());
+
     </script>
+
+    <div class="social-popup" id="socialPopup" aria-live="polite">
+        <div class="popup-icon">
+            <i class="fa fa-telegram"></i>
+        </div>
+        <div>
+            <div class="popup-title" id="popupTitle">STARK BHAI TOSS</div>
+            <div class="popup-message" id="popupMessage">Join our Telegram community now!</div>
+        </div>
+    </div>
+
 </body>
 </html>
