@@ -1,4 +1,9 @@
 
+// STARK BHAI TOSS - Telegram webhook
+// Campaign-level tracking using the permanent Telegram invite link.
+// Sends ONLY Meta CAPI Subscribe when a new join request is received.
+// It does NOT wait for admin approval and does NOT send Lead.
+
 exports.handler = async (event) => {
   try {
     if (event.httpMethod !== "POST") {
@@ -38,7 +43,6 @@ exports.handler = async (event) => {
     }
 
     const supabase = SUPABASE_URL.replace(/\/$/, "");
-
     const dbHeaders = {
       "Content-Type": "application/json",
       apikey: SUPABASE_SERVICE_ROLE_KEY,
@@ -58,21 +62,13 @@ exports.handler = async (event) => {
 
       const wasMember =
         oldStatus === "member" || oldStatus === "administrator";
-
       const isNowMember =
         newStatus === "member" || newStatus === "administrator";
 
-      // Only process a transition from non-member to member.
-      if (
-        chat?.id &&
-        user?.id &&
-        !wasMember &&
-        isNowMember
-      ) {
+      if (chat?.id && user?.id && !wasMember && isNowMember) {
         const approvedAt =
           new Date(memberUpdate.date * 1000).toISOString();
 
-        // Update the matching Telegram join request.
         const joinApprovalUrl =
           new URL(`${supabase}/rest/v1/telegram_join_requests`);
 
@@ -114,7 +110,7 @@ exports.handler = async (event) => {
         const approvedJoinRows =
           await joinApprovalResponse.json();
 
-        // Update requested attribution records for this Telegram user.
+        // Preserve existing attribution approval tracking.
         const attributionApprovalUrl =
           new URL(`${supabase}/rest/v1/telegram_attributions`);
 
@@ -196,7 +192,11 @@ exports.handler = async (event) => {
     const requestedAt =
       new Date(request.date * 1000).toISOString();
 
-    // Save Telegram join request.
+    const source = isKnownCampaignInvite(inviteLink)
+      ? "META_LANDING_PAGE"
+      : (inviteLink ? "OTHER_INVITE_LINK" : "UNKNOWN");
+
+    // Save the join request.
     const record = {
       telegram_user_id: user.id,
       username: user.username || null,
@@ -206,7 +206,8 @@ exports.handler = async (event) => {
       chat_title: chat.title || null,
       invite_link: inviteLink,
       requested_at: requestedAt,
-      status: "pending"
+      status: "pending",
+      source
     };
 
     const joinResponse = await fetch(
@@ -228,158 +229,156 @@ exports.handler = async (event) => {
       );
     }
 
-    if (!inviteLink) {
-      console.warn("Join request received without invite link");
-      return {
-        statusCode: 200,
-        body: "Join request saved without invite attribution"
-      };
-    }
+    // Fetch the saved request row.
+    const rowUrl =
+      new URL(`${supabase}/rest/v1/telegram_join_requests`);
 
-    // Match invite link with visitor attribution.
-    const attributionUrl =
-      new URL(`${supabase}/rest/v1/telegram_attributions`);
-
-    attributionUrl.searchParams.set(
-      "invite_link",
-      `eq.${inviteLink}`
+    rowUrl.searchParams.set(
+      "telegram_user_id",
+      `eq.${user.id}`
     );
-
-    attributionUrl.searchParams.set(
+    rowUrl.searchParams.set(
+      "chat_id",
+      `eq.${chat.id}`
+    );
+    rowUrl.searchParams.set(
       "select",
-      "id,telegram_user_id,invite_link,fbc,fbp,client_ip_address,client_user_agent,lead_event_sent,meta_event_sent,status"
+      "id,source,subscribe_event_sent,subscribe_event_status,subscribe_event_id"
     );
+    rowUrl.searchParams.set("limit", "1");
 
-    attributionUrl.searchParams.set("limit", "1");
+    const rowResponse = await fetch(rowUrl.toString(), {
+      headers: dbHeaders
+    });
 
-    const attributionResponse = await fetch(
-      attributionUrl.toString(),
-      { headers: dbHeaders }
-    );
-
-    if (!attributionResponse.ok) {
+    if (!rowResponse.ok) {
       throw new Error(
-        "Attribution lookup failed: " +
-        await attributionResponse.text()
+        "Join request lookup failed: " +
+        await rowResponse.text()
       );
     }
 
-    const attributionRows = await attributionResponse.json();
-    const attribution = attributionRows[0] || null;
+    const rows = await rowResponse.json();
+    const joinRow = rows[0];
 
-    if (!attribution) {
-      console.warn("No attribution found for invite link");
+    if (!joinRow) {
+      throw new Error("Join request row not found after save");
+    }
+
+    // Never send events for historical records.
+    if (joinRow.subscribe_event_status === "legacy") {
       return {
         statusCode: 200,
-        body: "Join request saved; attribution not found"
+        body: "Existing historical request; Subscribe not sent"
       };
     }
 
-    // Update attribution to requested.
-    const statusUrl =
-      new URL(`${supabase}/rest/v1/telegram_attributions`);
-
-    statusUrl.searchParams.set("id", `eq.${attribution.id}`);
-    statusUrl.searchParams.set("status", "not.eq.approved");
-
-    const statusResponse = await fetch(
-      statusUrl.toString(),
-      {
-        method: "PATCH",
-        headers: {
-          ...dbHeaders,
-          Prefer: "return=minimal"
-        },
-        body: JSON.stringify({
-          telegram_user_id: String(user.id),
-          requested_at: requestedAt,
-          status: "requested"
-        })
-      }
-    );
-
-    if (!statusResponse.ok) {
-      throw new Error(
-        "Attribution update failed: " +
-        await statusResponse.text()
-      );
+    if (
+      joinRow.subscribe_event_sent === true ||
+      joinRow.subscribe_event_status === "sent"
+    ) {
+      return {
+        statusCode: 200,
+        body: "Subscribe already sent"
+      };
     }
 
-    // ==========================================
-    // 3. META CAPI - LEAD AND SUBSCRIBE
-    // ==========================================
     if (!META_PIXEL_ID || !META_ACCESS_TOKEN) {
-      console.error("Meta CAPI credentials missing");
+      await updateEventState(
+        supabase,
+        dbHeaders,
+        joinRow.id,
+        "failed",
+        false,
+        null,
+        "Meta CAPI credentials missing"
+      );
+
       return {
         statusCode: 200,
         body: "Join request saved; Meta CAPI is not configured"
       };
     }
 
+    // Stable event ID for Meta deduplication.
+    const eventId =
+      `telegram-join-request-${chat.id}-${user.id}-subscribe`;
+
+    // Claim event before sending to prevent concurrent duplicate sends.
+    const claimUrl =
+      new URL(`${supabase}/rest/v1/telegram_join_requests`);
+
+    claimUrl.searchParams.set("id", `eq.${joinRow.id}`);
+    claimUrl.searchParams.set(
+      "subscribe_event_sent",
+      "eq.false"
+    );
+    claimUrl.searchParams.set(
+      "subscribe_event_status",
+      "in.(pending,failed)"
+    );
+
+    const claimResponse = await fetch(claimUrl.toString(), {
+      method: "PATCH",
+      headers: {
+        ...dbHeaders,
+        Prefer: "return=representation"
+      },
+      body: JSON.stringify({
+        subscribe_event_status: "sending",
+        subscribe_event_id: eventId,
+        subscribe_event_error: null
+      })
+    });
+
+    if (!claimResponse.ok) {
+      throw new Error(
+        "Subscribe event claim failed: " +
+        await claimResponse.text()
+      );
+    }
+
+    const claimedRows = await claimResponse.json();
+
+    if (!claimedRows.length) {
+      return {
+        statusCode: 200,
+        body: "Subscribe is already sent or being processed"
+      };
+    }
+
+    // Telegram does not provide the visitor's browser identifiers.
+    // Do not invent fbc, fbp, browser IP or browser User-Agent.
     const userData = {
       external_id: [
         await sha256(String(user.id))
       ]
     };
 
-    if (attribution.fbc) userData.fbc = attribution.fbc;
-    if (attribution.fbp) userData.fbp = attribution.fbp;
-
-    if (attribution.client_ip_address) {
-      userData.client_ip_address =
-        attribution.client_ip_address;
-    }
-
-    if (attribution.client_user_agent) {
-      userData.client_user_agent =
-        attribution.client_user_agent;
-    }
-
     const eventSourceUrl =
       (SITE_URL || "https://starkbhaitoss.netlify.app")
         .replace(/\/$/, "") + "/";
 
-    const baseEventId =
-      `telegram-join-request-${chat.id}-${user.id}`;
+    // ONLY SUBSCRIBE EVENT. NO LEAD EVENT.
+    const metaPayload = {
+      ...(META_TEST_EVENT_CODE
+        ? { test_event_code: META_TEST_EVENT_CODE }
+        : {}),
+      data: [{
+        event_name: "Subscribe",
+        event_time: request.date,
+        event_id: eventId,
+        action_source: "other",
+        event_source_url: eventSourceUrl,
+        user_data: userData
+      }]
+    };
 
-    const eventsToSend = [
-      {
-        eventName: "Lead",
-        flag: "lead_event_sent",
-        eventId: `${baseEventId}-lead`,
-        alreadySent: attribution.lead_event_sent === true
-      },
-      {
-        eventName: "Subscribe",
-        flag: "meta_event_sent",
-        eventId: `${baseEventId}-subscribe`,
-        alreadySent: attribution.meta_event_sent === true
-      }
-    ];
+    let metaResult;
+    let metaResponse;
 
-    const results = [];
-
-    for (const item of eventsToSend) {
-      if (item.alreadySent) {
-        results.push(`${item.eventName}: already sent`);
-        continue;
-      }
-
-      const metaPayload = {
-        ...(META_TEST_EVENT_CODE
-          ? { test_event_code: META_TEST_EVENT_CODE }
-          : {}),
-        data: [{
-          event_name: item.eventName,
-          event_time: request.date,
-          event_id: item.eventId,
-          action_source: "website",
-          event_source_url: eventSourceUrl,
-          user_data: userData
-        }]
-      };
-
-      const metaResponse = await fetch(
+    try {
+      metaResponse = await fetch(
         `https://graph.facebook.com/v25.0/${META_PIXEL_ID}/events`,
         {
           method: "POST",
@@ -391,61 +390,69 @@ exports.handler = async (event) => {
         }
       );
 
-      const metaResult = await metaResponse.json();
+      metaResult = await metaResponse.json();
 
-      if (
-        !metaResponse.ok ||
-        metaResult.error ||
-        metaResult.events_received !== 1
-      ) {
-        console.error(
-          `Meta ${item.eventName} CAPI error:`,
-          metaResult
-        );
-        results.push(`${item.eventName}: failed`);
-        continue;
-      }
-
-      // Mark event sent after Meta acknowledges it.
-      const markUrl =
-        new URL(`${supabase}/rest/v1/telegram_attributions`);
-
-      markUrl.searchParams.set("id", `eq.${attribution.id}`);
-
-      const markResponse = await fetch(
-        markUrl.toString(),
-        {
-          method: "PATCH",
-          headers: {
-            ...dbHeaders,
-            Prefer: "return=minimal"
-          },
-          body: JSON.stringify({
-            [item.flag]: true
-          })
-        }
+    } catch (error) {
+      await updateEventState(
+        supabase,
+        dbHeaders,
+        joinRow.id,
+        "failed",
+        false,
+        eventId,
+        String(error.message || error)
       );
 
-      if (!markResponse.ok) {
-        console.error(
-          `Database flag update failed for ${item.eventName}:`,
-          await markResponse.text()
-        );
-        results.push(`${item.eventName}: sent, flag update failed`);
-      } else {
-        results.push(`${item.eventName}: sent`);
-      }
+      throw error;
     }
 
-    console.log(
-      "Telegram request processed:",
-      user.id,
-      results
+    if (
+      !metaResponse.ok ||
+      metaResult.error ||
+      metaResult.events_received !== 1
+    ) {
+      const errorText = JSON.stringify(metaResult);
+
+      await updateEventState(
+        supabase,
+        dbHeaders,
+        joinRow.id,
+        "failed",
+        false,
+        eventId,
+        errorText
+      );
+
+      console.error("Meta Subscribe CAPI error:", metaResult);
+
+      return {
+        statusCode: 200,
+        body: "Join request saved; Meta Subscribe event failed"
+      };
+    }
+
+    // Mark successful event in Supabase.
+    await updateEventState(
+      supabase,
+      dbHeaders,
+      joinRow.id,
+      "sent",
+      true,
+      eventId,
+      null
     );
+
+    console.log("Telegram Subscribe event sent:", {
+      telegramUserId: user.id,
+      chatId: chat.id,
+      source: joinRow.source,
+      eventId,
+      eventsReceived: metaResult.events_received
+    });
 
     return {
       statusCode: 200,
-      body: `Join request processed: ${results.join("; ")}`
+      body: "Join request saved; Subscribe event sent"
     };
 
   } catch (error) {
@@ -458,9 +465,89 @@ exports.handler = async (event) => {
   }
 };
 
+
+// ==========================================
+// 3. PERMANENT INVITE LINK IDENTIFICATION
+// ==========================================
+function isKnownCampaignInvite(inviteLink) {
+  if (!inviteLink) return false;
+
+  try {
+    const url = new URL(inviteLink);
+
+    const allowedHosts = [
+      "t.me",
+      "telegram.me",
+      "www.telegram.me"
+    ];
+
+    const token = url.pathname.replace(/\/+$/, "");
+
+    return (
+      allowedHosts.includes(url.hostname.toLowerCase()) &&
+      token === "/+AgcwI8HCXQ80MWRl"
+    );
+
+  } catch {
+    return false;
+  }
+}
+
+
+// ==========================================
+// 4. UPDATE SUBSCRIBE EVENT STATUS
+// ==========================================
+async function updateEventState(
+  supabase,
+  dbHeaders,
+  rowId,
+  status,
+  sent,
+  eventId,
+  errorText
+) {
+  const url =
+    new URL(`${supabase}/rest/v1/telegram_join_requests`);
+
+  url.searchParams.set("id", `eq.${rowId}`);
+
+  const body = {
+    subscribe_event_status: status,
+    subscribe_event_sent: sent,
+    subscribe_event_id: eventId,
+    subscribe_event_error: errorText,
+    ...(sent
+      ? { subscribe_event_sent_at: new Date().toISOString() }
+      : {})
+  };
+
+  const response = await fetch(url.toString(), {
+    method: "PATCH",
+    headers: {
+      ...dbHeaders,
+      Prefer: "return=minimal"
+    },
+    body: JSON.stringify(body)
+  });
+
+  if (!response.ok) {
+    throw new Error(
+      `Subscribe state update failed: ${await response.text()}`
+    );
+  }
+}
+
+
+// ==========================================
+// 5. SHA256 HASH
+// ==========================================
 async function sha256(value) {
   const data = new TextEncoder().encode(value);
-  const hash = await crypto.subtle.digest("SHA-256", data);
+
+  const hash = await crypto.subtle.digest(
+    "SHA-256",
+    data
+  );
 
   return Array.from(new Uint8Array(hash))
     .map(byte => byte.toString(16).padStart(2, "0"))
