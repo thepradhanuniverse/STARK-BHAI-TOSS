@@ -1,6 +1,7 @@
 
 // STARK BHAI TOSS - Telegram webhook
-// Campaign-level tracking using the permanent Telegram invite link.
+// Saves Telegram requests in both request and attribution tables.
+// The permanent invite link is used only on the STARK BHAI landing page.
 // Sends ONLY Meta CAPI Subscribe when a new join request is received.
 // It does NOT wait for admin approval and does NOT send Lead.
 
@@ -110,43 +111,45 @@ exports.handler = async (event) => {
         const approvedJoinRows =
           await joinApprovalResponse.json();
 
-        // Preserve existing attribution approval tracking.
-        const attributionApprovalUrl =
-          new URL(`${supabase}/rest/v1/telegram_attributions`);
+        // Update the exact attribution rows linked to the approved request IDs.
+        // Keep a user-ID fallback for older attribution rows created before this mapping existed.
+        let approvedAttributionRows = [];
 
-        attributionApprovalUrl.searchParams.set(
-          "telegram_user_id",
-          `eq.${String(user.id)}`
-        );
-        attributionApprovalUrl.searchParams.set(
-          "status",
-          "eq.requested"
-        );
+        if (approvedJoinRows.length > 0) {
+          const requestIds = approvedJoinRows.map(row => row.id);
+          const attributionApprovalUrl =
+            new URL(`${supabase}/rest/v1/telegram_attributions`);
 
-        const attributionApprovalResponse = await fetch(
-          attributionApprovalUrl.toString(),
-          {
-            method: "PATCH",
-            headers: {
-              ...dbHeaders,
-              Prefer: "return=representation"
-            },
-            body: JSON.stringify({
-              status: "approved",
-              approved_at: approvedAt
-            })
-          }
-        );
-
-        if (!attributionApprovalResponse.ok) {
-          throw new Error(
-            "Attribution approval update failed: " +
-            await attributionApprovalResponse.text()
+          attributionApprovalUrl.searchParams.set(
+            "telegram_join_request_id",
+            `in.(${requestIds.join(",")})`
           );
-        }
+          attributionApprovalUrl.searchParams.set("status", "eq.requested");
 
-        const approvedAttributionRows =
-          await attributionApprovalResponse.json();
+          const attributionApprovalResponse = await fetch(
+            attributionApprovalUrl.toString(),
+            {
+              method: "PATCH",
+              headers: {
+                ...dbHeaders,
+                Prefer: "return=representation"
+              },
+              body: JSON.stringify({
+                status: "approved",
+                approved_at: approvedAt
+              })
+            }
+          );
+
+          if (!attributionApprovalResponse.ok) {
+            throw new Error(
+              "Attribution approval update failed: " +
+              await attributionApprovalResponse.text()
+            );
+          }
+
+          approvedAttributionRows = await attributionApprovalResponse.json();
+        }
 
         console.log("Telegram member approved:", {
           userId: user.id,
@@ -263,6 +266,37 @@ exports.handler = async (event) => {
 
     if (!joinRow) {
       throw new Error("Join request row not found after save");
+    }
+
+    // Save one attribution row for this exact Telegram join request.
+    // session_id is NULL because Telegram does not send the landing-page session ID.
+    // The unique telegram_join_request_id index makes this safe on webhook retries.
+    const attributionRecord = {
+      telegram_join_request_id: joinRow.id,
+      session_id: null,
+      invite_link: inviteLink,
+      telegram_user_id: String(user.id),
+      status: "requested",
+      requested_at: requestedAt
+    };
+
+    const attributionInsertResponse = await fetch(
+      `${supabase}/rest/v1/telegram_attributions?on_conflict=telegram_join_request_id`,
+      {
+        method: "POST",
+        headers: {
+          ...dbHeaders,
+          Prefer: "resolution=ignore-duplicates,return=minimal"
+        },
+        body: JSON.stringify(attributionRecord)
+      }
+    );
+
+    if (!attributionInsertResponse.ok) {
+      throw new Error(
+        "Telegram attribution save failed: " +
+        await attributionInsertResponse.text()
+      );
     }
 
     // Never send events for historical records.
@@ -431,7 +465,7 @@ exports.handler = async (event) => {
       };
     }
 
-    // Mark successful event in Supabase.
+    // Mark successful event in the join-request table.
     await updateEventState(
       supabase,
       dbHeaders,
@@ -441,6 +475,33 @@ exports.handler = async (event) => {
       eventId,
       null
     );
+
+    // Also reflect successful Meta event delivery in the linked attribution row.
+    const attributionMetaUpdateUrl =
+      new URL(`${supabase}/rest/v1/telegram_attributions`);
+    attributionMetaUpdateUrl.searchParams.set(
+      "telegram_join_request_id",
+      `eq.${joinRow.id}`
+    );
+
+    const attributionMetaUpdateResponse = await fetch(
+      attributionMetaUpdateUrl.toString(),
+      {
+        method: "PATCH",
+        headers: {
+          ...dbHeaders,
+          Prefer: "return=minimal"
+        },
+        body: JSON.stringify({ meta_event_sent: true })
+      }
+    );
+
+    if (!attributionMetaUpdateResponse.ok) {
+      throw new Error(
+        "Attribution Meta event status update failed: " +
+        await attributionMetaUpdateResponse.text()
+      );
+    }
 
     console.log("Telegram Subscribe event sent:", {
       telegramUserId: user.id,
