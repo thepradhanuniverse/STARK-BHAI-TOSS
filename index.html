@@ -369,13 +369,73 @@
             tick();
         }());
 
-        /* TELEGRAM DIRECT LINK + META PIXEL EVENT */
+        /* TELEGRAM CLICK ATTRIBUTION + META PIXEL EVENT */
         (function () {
             var telegramButton = document.getElementById("telegramButton");
+            var inviteLink = "https://t.me/+AgcwI8HCXQ80MWRl";
+            var endpoint = "/.netlify/functions/track-click";
+
+            function getCookie(name) {
+                var match = document.cookie.match(new RegExp("(?:^|; )" + name.replace(/[.$?*|{}()\\[\\]\\\\/+^]/g, "\\\\$&") + "=([^;]*)"));
+                return match ? decodeURIComponent(match[1]) : null;
+            }
+
+            function getSessionId() {
+                var key = "stark_bhai_session_id";
+                try {
+                    var existing = sessionStorage.getItem(key);
+                    if (existing) return existing;
+                    var created = (window.crypto && crypto.randomUUID)
+                        ? crypto.randomUUID()
+                        : "sb-" + Date.now() + "-" + Math.random().toString(16).slice(2);
+                    sessionStorage.setItem(key, created);
+                    return created;
+                } catch (e) {
+                    return "sb-" + Date.now() + "-" + Math.random().toString(16).slice(2);
+                }
+            }
+
+            function getFbc() {
+                var fbc = getCookie("_fbc");
+                if (fbc) return fbc;
+                var params = new URLSearchParams(window.location.search);
+                var fbclid = params.get("fbclid");
+                if (!fbclid) return null;
+                return "fb.1." + Date.now() + "." + fbclid;
+            }
 
             telegramButton.addEventListener("click", function () {
                 if (typeof fbq === "function") {
                     fbq("trackCustom", "TelegramClick");
+                }
+
+                var params = new URLSearchParams(window.location.search);
+                var payload = {
+                    session_id: getSessionId(),
+                    invite_link: inviteLink,
+                    fbclid: params.get("fbclid"),
+                    fbc: getFbc(),
+                    fbp: getCookie("_fbp"),
+                    landing_page_url: window.location.href,
+                    client_user_agent: navigator.userAgent
+                };
+
+                // Send attribution without delaying or blocking the Telegram link.
+                try {
+                    var body = JSON.stringify(payload);
+                    if (navigator.sendBeacon) {
+                        var blob = new Blob([body], { type: "application/json" });
+                        navigator.sendBeacon(endpoint, blob);
+                    } else {
+                        fetch(endpoint, {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json" },
+                            body: body,
+                            keepalive: true
+                        }).catch(function () {});
+                    }
+                } catch (e) {
+                    // Tracking failure must never stop the visitor from opening Telegram.
                 }
             });
         }());
