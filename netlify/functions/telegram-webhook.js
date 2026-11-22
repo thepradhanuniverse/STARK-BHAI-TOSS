@@ -483,9 +483,12 @@ function isKnownCampaignInvite(inviteLink) {
 
     const token = url.pathname.replace(/\/+$/, "");
 
+    // This permanent invite link is used only on the STARK BHAI landing page.
+    // Telegram/Supabase currently stores the visible value with an ellipsis,
+    // so match the stable beginning of the invite token.
     return (
       allowedHosts.includes(url.hostname.toLowerCase()) &&
-      token === "/+AgcwI8HCXQ80MWRl"
+      token.startsWith("/+AgcwI8HC")
     );
 
   } catch {
